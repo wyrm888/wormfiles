@@ -49,6 +49,7 @@ Click the globe next to **+** (or press **Ctrl+Shift+T**) to open a Worm tab. Wo
 - **Downloads go into the folder you were last viewing.** A toast offers "Show in folder", which opens that folder as a tab with the file selected. You can change this in Customize → Worm browser.
 - Includes bookmarks (Ctrl+D), a new tab page with your bookmarks and most visited sites, address-bar suggestions, find on page (Ctrl+F), zoom, print, save page, dev tools (F12), and a built-in PDF viewer.
 - Type a web address into a folder tab's address bar to open it in Worm. Type a folder path into a Worm tab to open that folder. Right-click an HTML, PDF, image or video file and choose **Open in Worm**.
+- **Speed:** Worm starts connecting to a site when you hover over a link or type its address. It looks up sites through encrypted DNS (Cloudflare 1.1.1.1 by default, also Quad9 or Google), uses GPU boost for smoother scrolling and video, and keeps a 512 MB cache. You can change all of these in Customize → Worm browser → Speed.
 - Optional: forget cookies and site data every time WormFiles closes. Clear browsing data whenever you want from the shield or ⋯ menu.
 
 Worm runs on Chromium, not Firefox, so it's not as hardened against fingerprinting as LibreWolf and can't run Firefox extensions. It gets security updates when WormFiles's Electron version is updated, not on its own.

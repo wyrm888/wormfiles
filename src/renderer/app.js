@@ -1932,6 +1932,7 @@ async function init() {
   setupWeb();
   setupExtras();
   setupUpdatesUI();
+  api.onNotice((msg) => toast(msg, { ms: 15000 }));
 
   $('#btn-back').onclick = () => isWebTab() ? webBack() : goBack();
   $('#btn-ql').onclick = quickLookOpen;

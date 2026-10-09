@@ -74,6 +74,20 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
   }
 
   // ---------- Session & privacy ----------
+  // ---------- Speed: connect to a site before you click ----------
+  // Only opens the connection (DNS + secure handshake); nothing is downloaded until you click.
+  const recentlyWarmed = new Map();
+  function preconnect(u) {
+    if (!ses || !u || !getSettings().webPreload) return;
+    let origin;
+    try { const x = new URL(u); if (!/^https?:$/.test(x.protocol)) return; origin = x.origin; } catch { return; }
+    const now = Date.now();
+    if (now - (recentlyWarmed.get(origin) || 0) < 20000) return;
+    recentlyWarmed.set(origin, now);
+    if (recentlyWarmed.size > 300) recentlyWarmed.delete(recentlyWarmed.keys().next().value);
+    try { ses.preconnect({ url: origin, numSockets: 1 }); } catch { /* older Electron */ }
+  }
+
   function initSession() {
     ses = session.fromPartition(PARTITION);
     const ua = ses.getUserAgent().replace(/\s?Electron\/\S+/i, '').replace(/\s?wormfiles\/\S+/i, '').replace(/\s?WormFiles\/\S+/i, '');
@@ -243,7 +257,7 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
     wc.on('did-navigate-in-page', (_e, u, isMain) => { if (isMain) { emit(id); addHistory(u, wc.getTitle()); } });
     wc.on('page-title-updated', (_e, title) => { emit(id, { title }); setHistoryTitle(wc.getURL(), title); });
     wc.on('page-favicon-updated', (_e, favs) => send('web:state', { id, favicon: favs && favs[0] }));
-    wc.on('update-target-url', (_e, u) => send('web:hover', { id, url: u }));
+    wc.on('update-target-url', (_e, u) => { send('web:hover', { id, url: u }); preconnect(u); });
     wc.on('found-in-page', (_e, r) => send('web:found', { id, active: r.activeMatchOrdinal, matches: r.matches }));
     wc.on('did-fail-load', (_e, code, desc, u, isMain) => {
       if (!isMain || code === -3) return; // -3 = aborted (e.g. user clicked elsewhere)
@@ -440,6 +454,7 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
   ipcMain.handle('web:destroy', (_e, id) => destroy(id));
   ipcMain.handle('web:lastFolder', (_e, p) => { if (p) lastFolder = p; });
   ipcMain.handle('web:searchUrl', (_e, q) => searchUrl(getSettings().webSearchEngine, q));
+  ipcMain.handle('web:preconnect', (_e, u) => preconnect(u === 'search' ? searchUrl(getSettings().webSearchEngine, 'x') : u));
   ipcMain.handle('web:blockerStatus', () => blockerStatus);
   ipcMain.handle('web:setAdBlock', (_e, on) => setAdBlock(on));
   ipcMain.handle('web:history', (_e, q, limit = 8) => {

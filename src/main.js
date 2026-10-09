@@ -23,6 +23,45 @@ if (!app.requestSingleInstanceLock()) {
   process.exit(0);
 }
 let pendingTargets = integration.parseTargets(process.argv);
+
+// ---------- Speed: GPU acceleration ----------
+// Read early: these switches only work before the app is ready.
+let earlySettings = {};
+try { earlySettings = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf8')); } catch { /* first run */ }
+if (earlySettings.gpuBoost !== false) {
+  app.commandLine.appendSwitch('ignore-gpu-blocklist');       // use the graphics card even if Chrome would refuse it
+  app.commandLine.appendSwitch('enable-gpu-rasterization');   // draw pages on the graphics card
+  app.commandLine.appendSwitch('enable-zero-copy');           // fewer memory copies when drawing
+  app.commandLine.appendSwitch('enable-smooth-scrolling');
+}
+// Bigger browser cache (512 MB) so sites you revisit load more from disk
+app.commandLine.appendSwitch('disk-cache-size', String(512 * 1024 * 1024));
+
+// If the graphics driver crashes with the boost on, turn the boost off for next time
+let gpuCrashes = 0;
+app.on('child-process-gone', (_e, d) => {
+  if (d.type !== 'GPU' || d.reason === 'clean-exit' || settings.gpuBoost === false) return;
+  if (++gpuCrashes >= 2) {
+    settings.gpuBoost = false;
+    saveSettings();
+    send('app:notice', 'Your graphics driver had trouble with GPU boost, so it was turned off. Restart WormFiles to finish.');
+  }
+});
+
+// ---------- Speed + privacy: encrypted DNS ----------
+const DNS_SERVERS = {
+  cloudflare: ['https://cloudflare-dns.com/dns-query'],
+  quad9: ['https://dns.quad9.net/dns-query'],
+  google: ['https://dns.google/dns-query']
+};
+function applyDns() {
+  const servers = DNS_SERVERS[settings.webDns];
+  try {
+    // "automatic" uses the fast encrypted server, and quietly falls back to normal DNS on networks that block it
+    if (servers) app.configureHostResolver({ enableBuiltInResolver: true, secureDnsMode: 'automatic', secureDnsServers: servers });
+    else app.configureHostResolver({ enableBuiltInResolver: true, secureDnsMode: 'off' });
+  } catch (e) { console.warn('DNS setup failed:', e.message); }
+}
 let rendererReady = false;
 app.on('second-instance', (_e, argv) => {
   let targets = integration.parseTargets(argv);
@@ -58,6 +97,9 @@ const DEFAULT_SETTINGS = {
   showPreview: true,
   restoreTabs: true,
   replaceExplorer: false,
+  gpuBoost: true,
+  webPreload: true,
+  webDns: 'cloudflare',
   openArchives: true,
   mailButton: true,
   mailBackground: true,
@@ -185,6 +227,7 @@ app.whenReady().then(() => {
       status: 200, headers: { 'Content-Type': type, 'Content-Length': String(st.size), 'Accept-Ranges': 'bytes' }
     });
   });
+  applyDns();
   createWindow();
   browser.initSession();
   setupUpdates();
@@ -305,6 +348,7 @@ ipcMain.handle('app:init', () => {
 ipcMain.handle('settings:set', (_e, patch) => {
   settings = { ...settings, ...patch };
   if ('webBlockAds' in patch) browser.setAdBlock(patch.webBlockAds);
+  if ('webDns' in patch) applyDns();
   saveSettings();
   return settings;
 });

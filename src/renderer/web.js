@@ -191,12 +191,14 @@ async function renderNewTabPage() {
   wireFavicons(page);
   const form = $('#ntp-form');
   form.onsubmit = (e) => { e.preventDefault(); webGo(t, $('#ntp-input').value); };
+  $('#ntp-input').addEventListener('input', (e) => warmUpTyped(e.target.value));
   page.onclick = (e) => {
     const rm = e.target.closest('[data-remove]');
     if (rm) { e.preventDefault(); e.stopPropagation(); setS({ bookmarks: (S.bookmarks || []).filter(b => b.url !== rm.dataset.remove) }); renderNewTabPage(); return; }
     const tile = e.target.closest('.ntp-tile');
     if (tile) { e.preventDefault(); webLoad(t, tile.dataset.url); }
   };
+  page.onmouseover = (e) => { const tile = e.target.closest('.ntp-tile'); if (tile) warmUpFor(tile.dataset.url); };
   page.onauxclick = (e) => {
     const tile = e.target.closest('.ntp-tile');
     if (tile && e.button === 1) { e.preventDefault(); newWebTab(tile.dataset.url, { activate: false, after: t.id }); }
@@ -432,8 +434,21 @@ function closeFind() {
 
 // ---------- Address suggestions ----------
 let suggestTimer = null;
+// Start connecting to the site (or the search engine) while the address is still being typed
+let warmTimer = null;
+// For typed text, wait until typing pauses so half-typed addresses aren't contacted
+function warmUpTyped(text) { clearTimeout(warmTimer); warmTimer = setTimeout(() => warmUpFor(text), 450); }
+function warmUpFor(text) {
+  const v = (text || '').trim();
+  if (!v || !S.webPreload) return;
+  if (/^https?:\/\//i.test(v)) api.web.preconnect(v);
+  else if (looksLikeUrl(v)) api.web.preconnect('https://' + v.replace(/^\/+/, ''));
+  else api.web.preconnect('search');
+}
+
 async function showSuggestions(input) {
   clearTimeout(suggestTimer);
+  warmUpTyped(input.value);
   suggestTimer = setTimeout(async () => {
     const q = input.value.trim();
     const el = $('#popover');
@@ -576,6 +591,13 @@ function browserSettingsPane() {
       <option value="current" ${S.webDownloadTo === 'current' ? 'selected' : ''}>The folder I was last in</option>
       <option value="downloads" ${S.webDownloadTo === 'downloads' ? 'selected' : ''}>Downloads folder</option>
       <option value="ask" ${S.webDownloadTo === 'ask' ? 'selected' : ''}>Ask every time</option></select></div>
+    <div class="side-title" style="padding-left:0;margin-top:16px">Speed</div>
+    ${chk('webPreload', 'Connect before you click', 'Starts connecting to a site when you hover over a link or type its address, so it opens sooner. Nothing is downloaded until you click.')}
+    <div class="field"><label>Private DNS</label><select data-bsel="webDns">
+      ${[['cloudflare', 'Cloudflare 1.1.1.1 (fastest)'], ['quad9', 'Quad9 (blocks known malware sites)'], ['google', 'Google 8.8.8.8'], ['off', 'Off — use my internet provider']]
+        .map(([k, l]) => `<option value="${k}" ${(S.webDns || 'cloudflare') === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <div class="hint">Looks up website addresses over an encrypted connection, so your internet provider can't see which sites you visit. Falls back to normal lookups on networks that block it.</div></div>
+    ${chk('gpuBoost', 'GPU boost', 'Draws pages on your graphics card for smoother scrolling and video. Takes effect after restarting WormFiles. Turns itself off if your graphics driver has trouble with it.')}
     <div class="side-title" style="padding-left:0;margin-top:16px">Mail button</div>
     ${chk('mailButton', 'Show the Mail button', 'An envelope at the left of the tab bar that opens your mail in Worm. Click it again to go back.')}
     ${chk('mailBackground', 'Check for new mail in the background', 'Keeps your inbox loaded so the button can show how many unread emails you have. Uses a bit more memory.')}
@@ -588,6 +610,7 @@ function bindBrowserSettings(pane, rerender) {
     setS({ [el.dataset.bk]: el.checked });
     el.parentElement.querySelector('span:last-child').textContent = el.checked ? 'On' : 'Off';
     if (el.dataset.bk === 'mailButton' || el.dataset.bk === 'mailBackground') { renderMailButton(); startMailInBackground(); }
+    if (el.dataset.bk === 'gpuBoost') toast('Restart WormFiles to apply this');
     if (isWebTab()) webRender();
   });
   pane.querySelectorAll('[data-btext]').forEach(el => el.onchange = () => {
