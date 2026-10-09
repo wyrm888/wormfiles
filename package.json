@@ -1,0 +1,62 @@
+{
+  "name": "wormfiles",
+  "productName": "WormFiles",
+  "version": "1.3.1",
+  "description": "A customizable file explorer for Windows 11 with tabs, themes, smart search, category views and a built-in privacy browser.",
+  "main": "src/main.js",
+  "author": "WormFiles",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win nsis portable",
+    "build:portable": "electron-builder --win portable"
+  },
+  "dependencies": {
+    "@ghostery/adblocker-electron": "^2.0.0",
+    "7zip-bin": "^5.2.0",
+    "electron-updater": "^6.3.9"
+  },
+  "devDependencies": {
+    "electron": "^37.2.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.wormfiles.app",
+    "productName": "WormFiles",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "build/icon.png",
+      "build/icon.ico",
+      "package.json",
+      "!node_modules/7zip-bin/mac/**",
+      "!node_modules/7zip-bin/linux/**",
+      "!node_modules/7zip-bin/win/ia32/**",
+      "!node_modules/7zip-bin/win/arm64/**"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "WormFiles",
+      "include": "build/installer.nsh",
+      "artifactName": "WormFiles-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "WormFiles-Portable-${version}.exe"
+    },
+    "asarUnpack": [
+      "node_modules/7zip-bin/**"
+    ]
+  }
+}

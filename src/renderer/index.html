@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; img-src 'self' data: wormfile: https: http:; media-src wormfile:; frame-src wormfile:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:">
+  <title>WormFiles</title>
+  <link rel="stylesheet" href="styles.css">
+  <style id="user-css"></style>
+</head>
+<body>
+  <div id="bg"></div>
+
+  <div id="app">
+    <!-- Title bar with tabs (window buttons are drawn by Windows on the right) -->
+    <header id="titlebar">
+      <div class="mail-wrap"><button id="mail-btn" class="icon-btn hidden" title="Proton Mail"><span data-icon="mail"></span><span class="mail-badge"></span></button></div>
+      <div id="tabs" role="tablist"></div>
+      <button id="new-tab" class="icon-btn" title="New folder tab (Ctrl+T)" data-icon="plus"></button>
+      <button id="new-web-tab" class="icon-btn" title="New Worm tab (Ctrl+Shift+T)" data-icon="globe"></button>
+      <div class="drag-fill"></div>
+    </header>
+
+    <!-- Navigation toolbar -->
+    <div id="toolbar">
+      <div class="btn-group">
+        <button class="icon-btn" id="btn-back" title="Back (Alt+Left)" data-icon="left"></button>
+        <button class="icon-btn" id="btn-fwd" title="Forward (Alt+Right)" data-icon="right"></button>
+        <button class="icon-btn" id="btn-up" title="Up one level (Alt+Up)" data-icon="up"></button>
+        <button class="icon-btn" id="btn-refresh" title="Refresh (F5)" data-icon="refresh"></button>
+      </div>
+      <div id="address">
+        <div id="crumbs"></div>
+        <input id="address-input" spellcheck="false" autocomplete="off">
+      </div>
+      <div id="search">
+        <span data-icon="search" class="search-ico"></span>
+        <input id="search-input" placeholder="Search" spellcheck="false" autocomplete="off">
+        <button class="icon-btn small" id="search-help-btn" title="Search tips" data-icon="help"></button>
+        <button class="icon-btn small hidden" id="search-clear" title="Clear search (Esc)" data-icon="x"></button>
+      </div>
+      <button class="icon-btn web-only" id="btn-star" title="Bookmark this page (Ctrl+D)" data-icon="star"></button>
+      <button class="icon-btn web-only" id="btn-shield" title="Privacy protection"><span data-icon="shield"></span><span id="shield-count"></span></button>
+      <button class="icon-btn web-only hidden" id="btn-downloads" title="Downloads" data-icon="download"></button>
+      <button class="icon-btn web-only" id="btn-webmenu" title="More" data-icon="more"></button>
+      <button class="icon-btn folder-only" id="btn-ql" title="Quick look (Space)" data-icon="eye"></button>
+      <button class="icon-btn folder-only" id="btn-split" title="Split view (Ctrl+\)" data-icon="columns"></button>
+      <div class="btn-group view-toggle">
+        <button class="icon-btn" data-view="grid" title="Grid view (Ctrl+1)" data-icon="grid"></button>
+        <button class="icon-btn" data-view="list" title="List view (Ctrl+2)" data-icon="list"></button>
+      </div>
+      <input type="range" id="zoom" min="48" max="220" step="4" title="Icon size (Ctrl+scroll)">
+      <button class="icon-btn" id="btn-preview" title="Preview pane (Alt+P)" data-icon="panel"></button>
+      <button class="icon-btn" id="btn-settings" title="Customize (Ctrl+,)" data-icon="palette"></button>
+    </div>
+
+    <!-- Category tabs + view controls -->
+    <div id="filterbar">
+      <div id="cats" role="tablist"></div>
+      <div class="spacer"></div>
+      <label class="toggle" title="Show matching files from every subfolder too">
+        <input type="checkbox" id="deep-toggle"><span class="track"></span><span>Include subfolders</span>
+      </label>
+      <div class="menu-btn" id="sort-btn" title="Sort and group">
+        <span data-icon="sort"></span><span id="sort-label">Name</span><span data-icon="chev" class="chev"></span>
+      </div>
+    </div>
+
+    <div id="findbar" class="hidden">
+      <span data-icon="search" class="dim"></span>
+      <input id="find-input" placeholder="Find on page" spellcheck="false" autocomplete="off">
+      <span id="find-count" class="dim"></span>
+      <button class="icon-btn small" id="find-prev" title="Previous (Shift+Enter)" data-icon="chevup"></button>
+      <button class="icon-btn small" id="find-next" title="Next (Enter)" data-icon="chev"></button>
+      <button class="icon-btn small" id="find-close" title="Close (Esc)" data-icon="x"></button>
+    </div>
+
+    <main id="main">
+      <aside id="sidebar">
+        <div class="side-section">
+          <div class="side-title">Quick access</div>
+          <div id="side-quick"></div>
+        </div>
+        <div class="side-section" id="pinned-section">
+          <div class="side-title">Pinned <button class="icon-btn tiny" id="pin-add" title="Pin a folder" data-icon="plus"></button></div>
+          <div id="side-pinned"></div>
+        </div>
+        <div class="side-section">
+          <div class="side-title">This PC</div>
+          <div id="side-drives"></div>
+        </div>
+      </aside>
+
+      <section id="content" tabindex="0">
+        <div id="list-header" class="hidden"></div>
+        <div id="items"></div>
+        <div id="webpage" class="hidden"></div>
+        <div id="empty" class="hidden"></div>
+        <div id="marquee" class="hidden"></div>
+        <div id="drop-hint" class="hidden">Drop to move here (hold Ctrl to copy)</div>
+      </section>
+
+      <section id="content2" class="hidden"></section>
+      <aside id="preview"></aside>
+    </main>
+
+    <footer id="status">
+      <span id="status-left"></span>
+      <span id="status-progress" class="hidden"><span class="spinner"></span><span id="status-progress-text"></span></span>
+      <span class="spacer"></span>
+      <span id="status-right"></span>
+    </footer>
+  </div>
+
+  <div id="ql" class="hidden">
+    <div class="ql-panel">
+      <div class="ql-head">
+        <div class="ql-meta"><div class="ql-title"></div><div class="ql-sub"></div></div>
+        <span class="ql-count dim"></span>
+        <button class="icon-btn" id="ql-prev" title="Previous (←)" data-icon="left"></button>
+        <button class="icon-btn" id="ql-next" title="Next (→)" data-icon="right"></button>
+        <button class="btn primary" id="ql-open"><span data-icon="open"></span>Open</button>
+        <button class="icon-btn" id="ql-close" title="Close (Space or Esc)" data-icon="x"></button>
+      </div>
+      <div class="ql-body"></div>
+    </div>
+  </div>
+
+  <div id="spacemap" class="hidden">
+    <div class="sm-panel">
+      <div class="sm-head">
+        <span data-icon="map" class="sm-ico"></span>
+        <b class="sm-title">Disk space</b>
+        <button class="icon-btn" id="sm-up" title="Up one level" data-icon="up"></button>
+        <div class="sm-crumbs"></div>
+        <span class="sm-total dim"></span>
+        <button class="icon-btn" id="sm-rescan" title="Measure again" data-icon="refresh"></button>
+        <button class="icon-btn" id="sm-close" title="Close (Esc)" data-icon="x"></button>
+      </div>
+      <div class="sm-map"></div>
+      <div class="sm-foot"><div class="sm-legend"></div><span class="dim">Click a folder to look inside · double-click a file to find it · right-click for more</span></div>
+    </div>
+  </div>
+
+  <div id="ctx" class="menu hidden"></div>
+  <div id="popover" class="menu hidden"></div>
+  <div id="toast" class="hidden"></div>
+
+  <div id="modal-wrap" class="hidden">
+    <div id="modal"></div>
+  </div>
+
+  <script src="../categories.js"></script>
+  <script src="../query.js"></script>
+  <script src="icons.js"></script>
+  <script src="themes.js"></script>
+  <script src="web.js"></script>
+  <script src="extras.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
