@@ -171,45 +171,157 @@ function wireFavicons(root) {
   });
 }
 
+// ---------- New tab page: sites you pin yourself ----------
+function pinnedSites() {
+  if (!Array.isArray(S.speedDial)) setS({ speedDial: (S.bookmarks || []).map(b => ({ url: b.url, title: b.title, favicon: b.favicon || '' })) });
+  return S.speedDial;
+}
+function savePinned(list) { setS({ speedDial: list }); }
+function normUrl(v) {
+  v = (v || '').trim();
+  if (!v) return '';
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(v)) v = 'https://' + v;
+  try { return new URL(v).href; } catch { return ''; }
+}
+function siteName(url) { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; } }
+
+function pinTileHtml(b, i) {
+  const fav = b.favicon || '';
+  return `<a class="ntp-tile" href="#" draggable="true" data-i="${i}" data-url="${esc(b.url)}" title="${esc(b.title || siteName(b.url))}\n${esc(b.url)}">
+    <span class="ntp-fav"><span class="ntp-letter">${esc(siteInitial(b.url))}</span>${fav ? `<img src="${esc(fav)}" alt="" class="ntp-favimg">` : ''}</span>
+    <span class="ntp-title">${esc(b.title || siteName(b.url))}</span>
+  </a>`;
+}
+
 async function renderNewTabPage() {
   const page = $('#webpage');
   const t = tab();
   const engine = SEARCH_ENGINES[S.webSearchEngine] || 'DuckDuckGo';
-  const bms = S.bookmarks || [];
+  const pins = pinnedSites();
   page.innerHTML = `<div class="ntp">
     <div class="ntp-brand"><img src="../../build/icon.png" alt="" class="ntp-favimg"><span>Worm</span></div>
     <form class="ntp-search" id="ntp-form">${icon('search')}<input id="ntp-input" placeholder="Search ${esc(engine)} or type a URL" autocomplete="off" spellcheck="false"></form>
-    ${bms.length ? `<div class="ntp-section">Bookmarks</div><div class="ntp-grid">${bms.map(b => tileHtml(b, true)).join('')}</div>` : ''}
-    <div id="ntp-top"></div>
-    <div class="ntp-privacy">
-      <span class="${S.webBlockAds ? 'on' : ''}">${icon('shield')} Ads &amp; trackers ${S.webBlockAds ? 'blocked' : 'allowed'}</span>
-      <span class="${S.webBlockThirdPartyCookies ? 'on' : ''}">${icon('cookie')} Third-party cookies ${S.webBlockThirdPartyCookies ? 'blocked' : 'allowed'}</span>
-      <span class="${S.webDoNotTrack ? 'on' : ''}">${icon('eye')} Do Not Track ${S.webDoNotTrack ? 'on' : 'off'}</span>
-      ${S.webClearOnExit ? `<span class="on">${icon('trash')} Forgets cookies on exit</span>` : ''}
+    <div class="ntp-grid ntp-pins">
+      ${pins.map((b, i) => pinTileHtml(b, i)).join('')}
+      <a class="ntp-tile ntp-add" href="#" title="Pin a website here">
+        <span class="ntp-fav">${icon('plus')}</span><span class="ntp-title">Add site</span>
+      </a>
     </div>
+    ${!pins.length ? '<div class="ntp-hint">Pin the websites you use most. Right-click a tile to edit or remove it, and drag tiles to reorder them.</div>' : ''}
+    <div id="ntp-top"></div>
   </div>`;
   wireFavicons(page);
-  const form = $('#ntp-form');
-  form.onsubmit = (e) => { e.preventDefault(); webGo(t, $('#ntp-input').value); };
+  $('#ntp-form').onsubmit = (e) => { e.preventDefault(); webGo(t, $('#ntp-input').value); };
   $('#ntp-input').addEventListener('input', (e) => warmUpTyped(e.target.value));
+
   page.onclick = (e) => {
-    const rm = e.target.closest('[data-remove]');
-    if (rm) { e.preventDefault(); e.stopPropagation(); setS({ bookmarks: (S.bookmarks || []).filter(b => b.url !== rm.dataset.remove) }); renderNewTabPage(); return; }
-    const tile = e.target.closest('.ntp-tile');
+    if (e.target.closest('.ntp-add')) { e.preventDefault(); pinSiteDialog(); return; }
+    const tile = e.target.closest('.ntp-tile[data-url]');
     if (tile) { e.preventDefault(); webLoad(t, tile.dataset.url); }
   };
-  page.onmouseover = (e) => { const tile = e.target.closest('.ntp-tile'); if (tile) warmUpFor(tile.dataset.url); };
+  page.onmouseover = (e) => { const tile = e.target.closest('.ntp-tile[data-url]'); if (tile) warmUpFor(tile.dataset.url); };
   page.onauxclick = (e) => {
-    const tile = e.target.closest('.ntp-tile');
+    const tile = e.target.closest('.ntp-tile[data-url]');
     if (tile && e.button === 1) { e.preventDefault(); newWebTab(tile.dataset.url, { activate: false, after: t.id }); }
   };
-  if (S.webRememberHistory) {
-    const top = await api.web.topSites().catch(() => []);
-    const bmUrls = new Set(bms.map(b => b.url));
-    const list = top.filter(x => !bmUrls.has(x.url)).slice(0, 8);
+  page.oncontextmenu = (e) => {
+    const tile = e.target.closest('.ntp-pins .ntp-tile[data-i]');
+    if (!tile) return;
+    e.preventDefault();
+    const i = +tile.dataset.i, list = pinnedSites(), b = list[i];
+    const move = (d) => { const l = [...list]; const [x] = l.splice(i, 1); l.splice(Math.max(0, Math.min(l.length, i + d)), 0, x); savePinned(l); renderNewTabPage(); };
+    showMenu(e.clientX, e.clientY, [
+      { label: 'Open in new tab', icon: 'tab', action: () => newWebTab(b.url, { activate: false, after: t.id }) },
+      { label: 'Edit…', icon: 'edit', action: () => pinSiteDialog(i) },
+      '-',
+      { label: 'Move left', icon: 'left', disabled: i === 0, action: () => move(-1) },
+      { label: 'Move right', icon: 'right', disabled: i === list.length - 1, action: () => move(1) },
+      '-',
+      { label: 'Remove', icon: 'trash', danger: true, action: () => { savePinned(list.filter((_, j) => j !== i)); renderNewTabPage(); } }
+    ]);
+  };
+
+  // drag tiles to reorder
+  let dragFrom = null;
+  page.ondragstart = (e) => { const tile = e.target.closest('.ntp-pins .ntp-tile[data-i]'); if (!tile) return; dragFrom = +tile.dataset.i; e.dataTransfer.effectAllowed = 'move'; tile.classList.add('dragging'); };
+  page.ondragover = (e) => { if (dragFrom != null && e.target.closest('.ntp-pins .ntp-tile[data-i]')) e.preventDefault(); };
+  page.ondrop = (e) => {
+    const tile = e.target.closest('.ntp-pins .ntp-tile[data-i]');
+    if (dragFrom == null || !tile) return;
+    e.preventDefault();
+    const to = +tile.dataset.i, l = [...pinnedSites()];
+    const [x] = l.splice(dragFrom, 1); l.splice(to, 0, x);
+    dragFrom = null; savePinned(l); renderNewTabPage();
+  };
+  page.ondragend = () => { dragFrom = null; page.querySelectorAll('.dragging').forEach(x => x.classList.remove('dragging')); };
+
+  if (S.webShowMostVisited && S.webRememberHistory) {
+    const pinned = new Set(pins.map(b => b.url));
+    const list = (await api.web.topSites().catch(() => [])).filter(x => !pinned.has(x.url)).slice(0, 8);
     const el = $('#ntp-top');
-    if (el && list.length && tab() === t) { el.innerHTML = `<div class="ntp-section">Most visited</div><div class="ntp-grid">${list.map(b => tileHtml(b, false)).join('')}</div>`; wireFavicons(el); }
+    if (el && list.length && tab() === t) {
+      el.innerHTML = `<div class="ntp-section">Most visited</div><div class="ntp-grid">${list.map(b => pinTileHtml(b, -1)).join('')}</div>`;
+      el.querySelectorAll('[data-i="-1"]').forEach(x => { x.removeAttribute('data-i'); x.draggable = false; });
+      wireFavicons(el);
+    }
   }
+}
+
+// Add or edit a pinned site
+async function pinSiteDialog(editIndex = null, preset = null) {
+  const list = pinnedSites();
+  const cur = editIndex != null ? list[editIndex] : (preset || { url: '', title: '' });
+  const pinnedUrls = new Set(list.map(b => b.url));
+  let ideas = [];
+  if (editIndex == null && !preset) {
+    const top = S.webRememberHistory ? await api.web.topSites().catch(() => []) : [];
+    const seen = new Set();
+    ideas = [...(S.bookmarks || []), ...top].filter(x => x.url && !pinnedUrls.has(x.url) && !seen.has(x.url) && seen.add(x.url)).slice(0, 8);
+  }
+  const body = openModal({
+    title: editIndex != null ? 'Edit pinned site' : 'Pin a website',
+    body: `<div class="field"><label>Address</label><input class="text-input" id="pin-url" placeholder="youtube.com" value="${esc(cur.url)}" spellcheck="false"></div>
+      <div class="field"><label>Name</label><input class="text-input" id="pin-title" placeholder="Optional — uses the site's name" value="${esc(cur.title || '')}" spellcheck="false"></div>
+      ${ideas.length ? `<div class="side-title" style="padding-left:0;margin-top:14px">Or pick one you visit a lot</div>
+        <div class="pin-ideas">${ideas.map((x, i) => `<button class="btn" data-idea="${i}">${esc(x.title && x.title.length < 28 ? x.title : siteName(x.url))}</button>`).join('')}</div>` : ''}`,
+    buttons: [
+      { label: 'Cancel' },
+      {
+        label: editIndex != null ? 'Save' : 'Pin', primary: true, action: () => {
+          const url = normUrl($('#pin-url').value);
+          if (!url) { toast('Type a website address, like youtube.com', { error: true }); return false; }
+          const title = $('#pin-title').value.trim() || siteName(url);
+          const entry = { url, title, favicon: (cur.url === url && cur.favicon) || faviconFor(url) };
+          const l = [...pinnedSites()];
+          if (editIndex != null) l[editIndex] = entry; else l.push(entry);
+          savePinned(l);
+          if (isWebTab() && tab().url === WEB_NEWTAB) renderNewTabPage();
+        }
+      }
+    ]
+  });
+  body.querySelectorAll('[data-idea]').forEach(b => b.onclick = () => {
+    const x = ideas[+b.dataset.idea];
+    savePinned([...pinnedSites(), { url: x.url, title: x.title && x.title.length < 40 ? x.title : siteName(x.url), favicon: x.favicon || faviconFor(x.url) }]);
+    closeModal();
+    if (isWebTab() && tab().url === WEB_NEWTAB) renderNewTabPage();
+    toast(`Pinned ${siteName(x.url)}`);
+  });
+  setTimeout(() => { const i = $('#pin-url'); if (i) { i.focus(); i.select(); } }, 30);
+  body.addEventListener('keydown', (e) => { if (e.key === 'Enter') body.parentElement.querySelector('.modal-foot .btn.primary')?.click(); });
+}
+
+// Remember site icons seen while browsing, so pinned tiles can show them
+const knownFavicons = {};
+function faviconFor(url) { try { return knownFavicons[new URL(url).origin] || ''; } catch { return ''; } }
+function rememberFavicon(pageUrl, fav) {
+  if (!fav || !/^https:/.test(fav)) return;
+  let origin; try { origin = new URL(pageUrl).origin; } catch { return; }
+  knownFavicons[origin] = fav;
+  const list = Array.isArray(S.speedDial) ? S.speedDial : [];
+  let changed = false;
+  const next = list.map(b => { try { if (!b.favicon && new URL(b.url).origin === origin) { changed = true; return { ...b, favicon: fav }; } } catch { /* bad url */ } return b; });
+  if (changed) savePinned(next);
 }
 
 function renderErrorPage(t) {
@@ -340,6 +452,7 @@ function webMoreMenu() {
     { label: 'Print…', icon: 'doc', disabled: !real, action: () => api.web.print(t.id) },
     { label: 'Save page as…', icon: 'download', disabled: !real, action: () => api.web.savePage(t.id) },
     { label: 'Copy page address', icon: 'copy', disabled: !real, action: () => { api.copyText(t.url); toast('Address copied'); } },
+    { label: 'Pin to new tab page', icon: 'pin', disabled: !real, action: () => pinSiteDialog(null, { url: t.url.replace(/[?#].*$/, ''), title: (t.title || '').split(/ [-|–—] /)[0].slice(0, 40) }) },
     '-',
     { label: 'Clear browsing data…', icon: 'trash', action: clearDataDialog },
     { label: 'Developer tools', icon: 'code', kbd: 'F12', disabled: !real, action: () => api.web.devtools(t.id) },
@@ -505,7 +618,7 @@ function onWebState(d) {
   if (d.canForward !== undefined) t.canForward = d.canForward;
   if (d.blocked !== undefined) t.blocked = d.blocked;
   if (d.zoom !== undefined) t.zoom = d.zoom;
-  if (d.favicon !== undefined) t.favicon = d.favicon;
+  if (d.favicon !== undefined) { t.favicon = d.favicon; rememberFavicon(t.url, d.favicon); }
   if (d.error !== undefined) t.error = d.error;
   if (t.isMail && (d.title !== undefined || d.loading !== undefined)) mailTitleChanged(t);
   if (t === tab()) {
@@ -586,6 +699,7 @@ function browserSettingsPane() {
     ${chk('webBlockThirdPartyCookies', 'Block third-party cookies', 'Stops other sites embedded in a page from reading their cookies.')}
     ${chk('webDoNotTrack', 'Send Do Not Track', 'Also sends Global Privacy Control, which is legally binding in some US states.')}
     ${chk('webRememberHistory', 'Remember history', 'Used for address-bar suggestions and Most visited. Stored only on this PC.')}
+    ${chk('webShowMostVisited', 'Show Most visited on the new tab page', 'Adds your most-visited sites under your pinned ones.')}
     ${chk('webClearOnExit', 'Forget cookies & site data when WormFiles closes', 'You will be signed out of websites each time you restart.')}
     <div class="field"><label>Save downloads to</label><select data-bsel="webDownloadTo">
       <option value="current" ${S.webDownloadTo === 'current' ? 'selected' : ''}>The folder I was last in</option>

@@ -99,6 +99,7 @@ const DEFAULT_SETTINGS = {
   replaceExplorer: false,
   gpuBoost: true,
   webPreload: true,
+  webShowMostVisited: false,
   webDns: 'cloudflare',
   openArchives: true,
   mailButton: true,
