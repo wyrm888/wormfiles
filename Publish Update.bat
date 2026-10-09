@@ -68,6 +68,12 @@ git config user.email "%GHID%+%OWNER%@users.noreply.github.com"
 git remote get-url origin >nul 2>nul || git remote add origin https://github.com/%OWNER%/%REPO%.git
 git add -A
 git commit -q -m "WormFiles %VER%" >nul 2>nul
+rem Bring in anything edited on the GitHub website (like the README) before uploading
+git ls-remote --exit-code --heads origin main >nul 2>nul
+if errorlevel 1 goto push
+git pull -q --rebase origin main
+if errorlevel 1 goto pull_failed
+:push
 git push -q -u origin main
 if errorlevel 1 goto push_failed
 
@@ -126,6 +132,14 @@ exit /b 1
 :restart_needed
 echo.
 echo  Something was just installed. Close this window and double-click this file again.
+pause
+exit /b 1
+
+:pull_failed
+git rebase --abort >nul 2>nul
+echo.
+echo  A file was changed both here and on the GitHub website, so Git doesn't know
+echo  which version to keep. Nothing was uploaded - tell Claude which file it was.
 pause
 exit /b 1
 
