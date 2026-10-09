@@ -58,45 +58,10 @@ All shortcuts are listed in Customize (Ctrl+,) → Shortcuts.
 
 Settings are saved in `%APPDATA%\wormfiles\settings.json`.
 
-## Publishing updates (for the owner)
+<img width="1920" height="1080" alt="{53BEB215-CF6E-4CD0-BA1F-08A475F03D3A}" src="https://github.com/user-attachments/assets/d69c20d9-af78-41fc-89b2-e0e85fcbe820" />
 
-Double-click **Publish Update.bat**. The first time, it installs Git and the GitHub CLI, asks you to sign in to GitHub, and creates the public `wormfiles` repository. Each time after that, it:
+<img width="1920" height="1080" alt="{7C6CCC93-6C26-4010-9756-AA7C0EE758D2}" src="https://github.com/user-attachments/assets/ded83786-0e3a-4f2d-93d9-cd26ea9ecde8" />
 
-1. Uploads the code.
-2. Builds the installer.
-3. Posts it as a new release.
-4. Copies the link to share.
+<img width="1920" height="1080" alt="{138C8BE1-810A-45F3-9E86-9B52F7992BEB}" src="https://github.com/user-attachments/assets/490ccde7-b191-47a5-b646-af5d165f44c8" />
 
-Installed copies check for new releases every few hours, download them in the background, and offer to restart. Each release needs a new version number; the script offers to bump it if you forget.
 
-## Make WormFiles your main file explorer and Worm your browser
-
-Open Customize (Ctrl+,) → **Behavior** → **Windows**:
-
-- **Open folders in WormFiles:** folders you open from the desktop, with Win+E, from shortcuts, or from other apps open as WormFiles tabs instead of File Explorer windows. If WormFiles is already open, they open as a new tab in that window. Turn it off to go back. Uninstalling WormFiles undoes it automatically.
-- **Make Worm my default browser:** Windows opens its Default apps page on Worm. Click **Set default**. Links from Discord, email and other apps then open as Worm tabs, and so do .html and .pdf files.
-
-File Explorer itself isn't removed. Windows still uses it for the desktop and taskbar, the File Explorer icon pinned to the taskbar still opens it, and "Show in Windows Explorer" always opens the real one.
-
-## Notes
-
-- Delete always goes to the Recycle Bin. WormFiles never permanently deletes files.
-- Copy and paste work inside WormFiles. To move files to or from Windows Explorer, drag and drop them.
-
-## Project layout
-
-```
-src/main.js        file system, search, thumbnails, window
-src/browser.js     Worm (built-in browser): tabs, ad blocking, privacy, downloads
-src/web-preload.js Worm page shield (YouTube ad removal)
-src/integration.js Windows integration (open folders, default browser)
-src/archive.js     browse zips with 7-Zip
-src/spacemap.js    disk space map scanner
-src/renderer/extras.js  mail button, spacebar preview, space map, split view
-build/installer.nsh cleans that up on uninstall
-src/preload.js     bridge between the window and main.js
-src/query.js       search syntax parser
-src/categories.js  which extensions count as images, videos, ...
-src/renderer/      the interface (HTML/CSS/JS, themes, icons; web.js = browser UI)
-build/icon.ico     app icon
-```
