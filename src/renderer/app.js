@@ -239,6 +239,7 @@ function activateTab(i) {
   activeIdx = i;
   const t = tab();
   document.body.classList.toggle('web-mode', t.kind === 'web');
+  if (PL.open && !PL.mini && t.kind === 'web') showPlayer(true);
   renderTabs();
   applySplitLayout();
   if (t.kind === 'web') { api.watch(null); webActivate(t); saveTabs(); return; }
@@ -411,6 +412,7 @@ async function openEntry(e, { newTabToo = false } = {}) {
     else navigate(e.path);
     return;
   }
+  if (S.mediaPlayer !== false && isPlayable(e)) { openPlayer(e); return; }
   const err = await api.open(e.path);
   if (err) toast(`Couldn't open "${e.name}": ${err}`, { error: true });
 }
@@ -1267,7 +1269,7 @@ function itemMenu() {
   if (isReadonlyPath(t.path)) {
     const root = archiveRootOf(t.path);
     return [
-      { label: 'Open', icon: 'open', kbd: 'Enter', action: () => sel.slice(0, 15).forEach(e => openEntry(e)) },
+      { label: 'Open', icon: 'open', kbd: 'Enter', action: () => openEntries(sel) },
       { label: 'Quick look', icon: 'eye', kbd: 'Space', action: quickLookOpen },
       '-',
       { label: `Extract to "${baseName(parentOf(root))}"`, icon: 'download', action: () => doPaste(sel.map(e => e.path), parentOf(root), 'copy') },
@@ -1277,12 +1279,16 @@ function itemMenu() {
   }
   const archiveFile = one && one.isArchive && !one.inArchive;
   return [
-    { label: archiveFile && S.openArchives !== false ? 'Look inside' : 'Open', icon: 'open', kbd: 'Enter', action: () => sel.slice(0, 15).forEach(e => openEntry(e)) },
+    { label: archiveFile && S.openArchives !== false ? 'Look inside' : 'Open', icon: 'open', kbd: 'Enter', action: () => openEntries(sel) },
     { label: 'Quick look', icon: 'eye', kbd: 'Space', action: quickLookOpen },
     one && one.isDir && { label: 'Open in new tab', icon: 'tab', kbd: 'Middle-click', action: () => newTab(one.path) },
     archiveFile && { label: `Extract to "${one.name.replace(/\.(tar\.(gz|bz2|xz)|[^.]+)$/i, '')}\\"`, icon: 'download', action: () => extractArchive(one.path, 'folder') },
     archiveFile && { label: 'Extract here', icon: 'download', action: () => extractArchive(one.path, 'here') },
     archiveFile && S.openArchives !== false && { label: 'Open with default app', icon: 'app', action: () => api.open(one.path) },
+    sel.filter(isPlayable).length > 1 && { label: `Play all (${sel.filter(isPlayable).length})`, icon: 'play', action: () => { const m = sel.filter(isPlayable); openPlayer(m[0], m); } },
+    one && isPlayable(one) && (S.mediaPlayer !== false
+      ? { label: 'Open with default app', icon: 'app', action: () => api.open(one.path) }
+      : { label: 'Play in WormFiles', icon: 'play', action: () => openPlayer(one) }),
     one && !one.isDir && { label: 'Open with…', icon: 'app', action: () => api.openWith(one.path) },
     one && !one.isDir && BROWSER_OPENABLE.has(one.ext) && { label: 'Open in Worm', icon: 'globe', action: () => newWebTab(fileToUrl(one.path)) },
     t.deep && one && { label: 'Open file location', icon: 'folder', action: () => navigate(parentOf(one.path), { keepSelection: one.path }) },
@@ -1452,6 +1458,7 @@ function openSettings(startTab = 'look') {
     ${check('showExtensions', 'Show file extensions')}
     ${check('showPreview', 'Preview pane')}
     ${check('restoreTabs', 'Reopen tabs on launch')}
+    ${check('mediaPlayer', 'Play videos and music in WormFiles', 'Double-click a video or song to play it in the built-in player. Turn off to use your usual app instead.')}
     ${check('openArchives', 'Open zip files like folders', 'Double-click a .zip, .7z or .rar to look inside. Turn off to open them with your usual app instead.')}
     <div id="integration"></div>`;
 
@@ -1820,6 +1827,7 @@ function moveSelection(dir, extend) {
 function setupKeys() {
   document.addEventListener('keydown', (e) => {
     if (QL.open) { handleQLKey(e); return; }
+    if (PL.open && !PL.mini && handlePlayerKey(e) !== false) return;
     if (!$('#spacemap').classList.contains('hidden')) { if (e.key === 'Escape') closeSpaceMap(); return; }
     const inField = e.target.matches('input, textarea, select');
     const modalOpen = !$('#modal-wrap').classList.contains('hidden');
@@ -1875,7 +1883,7 @@ function setupKeys() {
     else if (k === 'F2') { e.preventDefault(); if (sel.length === 1) startRename(sel[0]); }
     else if (k === 'Delete') { e.preventDefault(); trashSel(); }
     else if (e.altKey && k === 'Enter') { e.preventDefault(); if (sel[0]) api.properties(sel[0].path); }
-    else if (k === 'Enter') { e.preventDefault(); if (sel.length === 1 && sel[0].isDir) openEntry(sel[0]); else sel.slice(0, 15).forEach(x => openEntry(x)); }
+    else if (k === 'Enter') { e.preventDefault(); if (sel.length === 1 && sel[0].isDir) openEntry(sel[0]); else openEntries(sel); }
     else if (k === 'Backspace') { e.preventDefault(); goBack(); }
     else if (k === ' ' && !ctrl && !e.altKey) { e.preventDefault(); quickLookOpen(); }
     else if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(k)) {
@@ -1931,6 +1939,7 @@ async function init() {
   setupKeys();
   setupWeb();
   setupExtras();
+  setupPlayer();
   setupUpdatesUI();
   api.onNotice((msg) => toast(msg, { ms: 15000 }));
 

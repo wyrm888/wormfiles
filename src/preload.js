@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('wf', {
   folderSize: invoke('fs:folderSize'),
   icon: invoke('fs:icon'),
   thumb: invoke('fs:thumb'),
+  mediaTags: invoke('media:tags'),
 
   searchStart: invoke('search:start'),
   searchCancel: invoke('search:cancel'),

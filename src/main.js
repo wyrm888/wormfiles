@@ -11,6 +11,7 @@ const { setupBrowser } = require('./browser');
 const integration = require('./integration');
 const archive = require('./archive');
 const spacemap = require('./spacemap');
+const mediatags = require('./mediatags');
 
 // ---------- Custom protocol so the UI can show local images/videos safely ----------
 protocol.registerSchemesAsPrivileged([
@@ -102,6 +103,7 @@ const DEFAULT_SETTINGS = {
   webShowMostVisited: false,
   webDns: 'cloudflare',
   openArchives: true,
+  mediaPlayer: true,
   mailButton: true,
   mailBackground: true,
   mailUrl: 'https://mail.proton.me/u/0/inbox',
@@ -248,7 +250,7 @@ const MIME = {
   bmp: 'image/bmp', svg: 'image/svg+xml', ico: 'image/x-icon', avif: 'image/avif', tif: 'image/tiff', tiff: 'image/tiff',
   mp4: 'video/mp4', m4v: 'video/mp4', webm: 'video/webm', mkv: 'video/x-matroska', mov: 'video/quicktime', ogv: 'video/ogg',
   mp3: 'audio/mpeg', wav: 'audio/wav', flac: 'audio/flac', ogg: 'audio/ogg', oga: 'audio/ogg', m4a: 'audio/mp4',
-  aac: 'audio/aac', opus: 'audio/opus', pdf: 'application/pdf'
+  aac: 'audio/aac', opus: 'audio/opus', weba: 'audio/webm', pdf: 'application/pdf'
 };
 
 const SKIP_NAMES = new Set(['$recycle.bin', 'system volume information', 'desktop.ini', 'thumbs.db', '$windows.~bt', '$windows.~ws', 'pagefile.sys', 'hiberfil.sys', 'swapfile.sys', 'dumpstack.log.tmp']);
@@ -628,6 +630,14 @@ ipcMain.handle('fs:thumb', async (_e, p, size = 256) => {
     if (!img.isEmpty()) return img.toDataURL();
   } catch { /* fall through */ }
   return null;
+});
+
+// Song title / artist / album art for the media player
+ipcMain.handle('media:tags', async (_e, p) => {
+  try {
+    if (!fs.existsSync(p) && archive.splitVirtual(p)) p = await archive.extractToTemp(p);
+    return await mediatags.readTags(p);
+  } catch { return {}; }
 });
 
 // ---------- Search (recursive, streamed, cancellable) ----------

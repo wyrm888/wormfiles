@@ -55,6 +55,7 @@ function openMail() {
   if (WebState.findOpen) closeFind();
   hideSuggestions();
   if (QL.open) quickLookClose();
+  if (PL.open && !PL.mini) showPlayer(true);
   mailReturnIdx = activeIdx;
   mailActive = true;
   document.body.classList.add('web-mode');

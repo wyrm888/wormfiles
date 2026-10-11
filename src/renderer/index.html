@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; img-src 'self' data: wormfile: https: http:; media-src wormfile:; frame-src wormfile:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:">
+        content="default-src 'self'; img-src 'self' data: wormfile: https: http:; media-src wormfile: blob:; frame-src wormfile:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:">
   <title>WormFiles</title>
   <link rel="stylesheet" href="styles.css">
   <style id="user-css"></style>
@@ -126,6 +126,58 @@
     </div>
   </div>
 
+  <div id="player" class="hidden" tabindex="-1">
+    <div class="pl-stage">
+      <div class="pl-backdrop"></div>
+      <video id="pl-media" preload="auto"></video>
+      <div class="pl-art hidden">
+        <div class="pl-cover"></div>
+        <div class="pl-song"></div>
+        <div class="pl-artist dim"></div>
+      </div>
+      <div class="pl-msg hidden"></div>
+      <div class="pl-flash"></div>
+      <div class="pl-resume hidden"><span></span><button class="btn small" id="pl-restart">Start over</button></div>
+      <div class="pl-top">
+        <div class="pl-meta"><div class="pl-title"></div><div class="pl-sub"></div></div>
+        <button class="icon-btn" id="pl-list-btn" title="Up next (Q)" data-icon="playlist"></button>
+        <button class="icon-btn" id="pl-mini-btn" title="Mini player — keep listening while you browse" data-icon="minimize"></button>
+        <button class="icon-btn" id="pl-close" title="Close (Esc)" data-icon="x"></button>
+      </div>
+      <div class="pl-controls">
+        <div class="pl-seek" title="">
+          <div class="pl-rail"><div class="pl-buf"></div><div class="pl-fill"></div></div>
+          <div class="pl-knob"></div>
+          <div class="pl-tip hidden"></div>
+        </div>
+        <div class="pl-row">
+          <button class="icon-btn" id="pl-prev" title="Previous (P)" data-icon="skipprev"></button>
+          <button class="icon-btn pl-play" id="pl-play" title="Play / pause (Space)" data-icon="play"></button>
+          <button class="icon-btn" id="pl-next" title="Next (N)" data-icon="skipnext"></button>
+          <span class="pl-time"><span id="pl-cur">0:00</span> / <span id="pl-dur">0:00</span></span>
+          <span class="pl-mini-title"></span>
+          <span class="pl-spacer"></span>
+          <button class="icon-btn" id="pl-shuffle" title="Shuffle (S)" data-icon="shuffle"></button>
+          <button class="icon-btn" id="pl-loop" title="Repeat (R)" data-icon="repeat"></button>
+          <button class="icon-btn hidden" id="pl-cc" title="Subtitles (C)" data-icon="captions"></button>
+          <button class="btn small pl-speed" id="pl-speed" title="Playback speed (Shift+&lt; / Shift+&gt;)">1×</button>
+          <span class="pl-vol">
+            <button class="icon-btn" id="pl-mute" title="Mute (M)" data-icon="volume"></button>
+            <input type="range" id="pl-volume" min="0" max="1" step="0.01" title="Volume (↑ / ↓)">
+          </span>
+          <button class="icon-btn" id="pl-pip" title="Picture in picture" data-icon="pip"></button>
+          <button class="icon-btn" id="pl-fs" title="Fullscreen (F)" data-icon="fullscreen"></button>
+          <button class="icon-btn" id="pl-expand" title="Open the player" data-icon="expand"></button>
+          <button class="icon-btn" id="pl-mini-close" title="Stop" data-icon="x"></button>
+        </div>
+      </div>
+    </div>
+    <aside class="pl-list hidden">
+      <div class="pl-list-head"><b>Up next</b><span class="dim" id="pl-list-count"></span></div>
+      <div class="pl-list-rows"></div>
+    </aside>
+  </div>
+
   <div id="spacemap" class="hidden">
     <div class="sm-panel">
       <div class="sm-head">
@@ -156,6 +208,7 @@
   <script src="themes.js"></script>
   <script src="web.js"></script>
   <script src="extras.js"></script>
+  <script src="player.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
