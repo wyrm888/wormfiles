@@ -7,4 +7,5 @@ if errorlevel 1 (
   exit /b 1
 )
 if not exist node_modules\electron call npm install --no-fund --no-audit
+if not exist node_modules\ffmpeg-static call npm install --no-fund --no-audit
 start "" /min cmd /c "npx electron ."

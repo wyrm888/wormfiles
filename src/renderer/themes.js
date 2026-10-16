@@ -72,6 +72,10 @@ const THEMES = {
   }
 };
 
+// Built-in themes plus any the person imported
+function allThemes() { return { ...THEMES, ...((typeof S !== 'undefined' && S.customThemes) || {}) }; }
+function themeById(k) { return allThemes()[k]; }
+
 function hexToRgb(hex) {
   const h = hex.replace('#', '');
   const n = parseInt(h.length === 3 ? h.split('').map(c => c + c).join('') : h, 16);

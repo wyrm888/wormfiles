@@ -121,6 +121,7 @@ function webRender() {
   $('#empty').classList.add('hidden');
   if (t.url === WEB_NEWTAB) { page.classList.remove('hidden'); renderNewTabPage(); }
   else if (t.error) { page.classList.remove('hidden'); renderErrorPage(t); }
+  else if (t.popped) { page.classList.remove('hidden'); renderPoppedPage(t); }
   else { page.classList.add('hidden'); page.innerHTML = ''; }
   renderWebStatus();
   webSync();
@@ -344,6 +345,107 @@ function renderErrorPage(t) {
   $('#web-retry').onclick = () => { t.error = null; webRender(); api.web.reload(t.id); };
 }
 
+// ---------- History (Ctrl+H) ----------
+function historyDayLabel(t) {
+  const d = new Date(t), now = new Date();
+  const day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = Math.round((day(now) - day(d)) / 86400000);
+  if (diff === 0) return 'Today';
+  if (diff === 1) return 'Yesterday';
+  if (diff < 7) return d.toLocaleDateString(undefined, { weekday: 'long' });
+  return d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: d.getFullYear() === now.getFullYear() ? undefined : 'numeric' });
+}
+function openHistory() {
+  const body = document.createElement('div');
+  body.className = 'hist';
+  body.innerHTML = `<div class="hist-top">
+      <div class="hist-search">${icon('search')}<input class="text-input" id="hist-q" placeholder="Search history" spellcheck="false" autocomplete="off"></div>
+      <button class="btn danger" id="hist-clear">${icon('trash')}Clear all</button>
+    </div>
+    ${S.webRememberHistory ? '' : '<p class="tip">History is turned off in Worm settings, so new visits aren\'t being saved.</p>'}
+    <div class="hist-list"></div>`;
+  openModal({ title: 'History', body, wide: true, onClose: webSync });
+  const list = body.querySelector('.hist-list'), q = body.querySelector('#hist-q');
+  let items = [];
+  const render = async () => {
+    const r = await api.web.historyAll(q.value, 600).catch(() => ({ items: [], total: 0 }));
+    items = r.items;
+    if (!items.length) { list.innerHTML = `<div class="hist-empty dim">${q.value ? 'Nothing in your history matches that.' : 'No history yet.'}</div>`; return; }
+    let html = '', last = '';
+    items.forEach((h, i) => {
+      const label = historyDayLabel(h.t);
+      if (label !== last) { html += `<div class="hist-day">${esc(label)}</div>`; last = label; }
+      const fav = faviconFor(h.url);
+      html += `<div class="hist-row" data-i="${i}" title="${esc(h.url)}">
+        <span class="hist-time dim">${new Date(h.t).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}</span>
+        <span class="hist-fav">${fav ? `<img src="${esc(fav)}" alt="">` : `<span class="hist-letter">${esc(siteInitial(h.url))}</span>`}</span>
+        <span class="hist-title">${esc(h.title || h.url)}</span>
+        <span class="hist-host dim">${esc(siteName(h.url))}</span>
+        <button class="icon-btn small hist-del" title="Remove from history">${icon('x')}</button></div>`;
+    });
+    if (r.total > items.length && !q.value) html += `<div class="hist-empty dim">Showing the latest ${items.length} of ${r.total}. Search to find older pages.</div>`;
+    list.innerHTML = html;
+    list.querySelectorAll('.hist-fav img').forEach(img => { img.onerror = () => img.remove(); });
+  };
+  let tm;
+  q.addEventListener('input', () => { clearTimeout(tm); tm = setTimeout(render, 120); });
+  q.addEventListener('keydown', (e) => { if (e.key === 'Enter') { const first = list.querySelector('.hist-row'); if (first) first.click(); } });
+  list.addEventListener('click', async (e) => {
+    const row = e.target.closest('.hist-row');
+    if (!row) return;
+    const h = items[+row.dataset.i];
+    if (e.target.closest('.hist-del')) { await api.web.historyDelete([h.url]); render(); return; }
+    closeModal();
+    const t = tab();
+    if (isWebTab(t) && !t.isMail && !e.ctrlKey) webLoad(t, h.url); else newWebTab(h.url, { activate: !e.ctrlKey });
+  });
+  list.addEventListener('auxclick', (e) => { const row = e.target.closest('.hist-row'); if (row && e.button === 1) newWebTab(items[+row.dataset.i].url, { activate: false }); });
+  body.querySelector('#hist-clear').onclick = async () => {
+    if (!confirmInline(body.querySelector('#hist-clear'), 'Click again to clear everything')) return;
+    await api.web.historyDelete('all'); toast('History cleared'); render();
+  };
+  render();
+  setTimeout(() => q.focus(), 30);
+}
+// Two-click confirm without a browser dialog (dialogs block the app)
+function confirmInline(btn, text) {
+  if (btn.dataset.armed) { delete btn.dataset.armed; return true; }
+  btn.dataset.armed = '1';
+  const old = btn.innerHTML;
+  btn.textContent = text;
+  setTimeout(() => { if (btn.dataset.armed) { delete btn.dataset.armed; btn.innerHTML = old; } }, 3000);
+  return false;
+}
+
+// ---------- Pop-out video ----------
+function accentHex() {
+  const c = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
+  if (/^#[0-9a-f]{6}$/i.test(c)) return c;
+  const m = /rgba?\((\d+)[ ,]+(\d+)[ ,]+(\d+)/.exec(c);
+  return m ? '#' + [m[1], m[2], m[3]].map(n => (+n).toString(16).padStart(2, '0')).join('') : '#e11d2e';
+}
+async function popOutVideo(t = tab()) {
+  if (!isWebTab(t) || !t.created || t.url === WEB_NEWTAB) return;
+  if (t.popped) { api.web.popout(t.id); return; } // already out: just show it
+  const r = await api.web.popout(t.id, accentHex());
+  if (r === 'novideo') toast('No video on this page yet — start it playing, then pop it out', { error: true });
+}
+function renderPoppedPage(t) {
+  $('#webpage').innerHTML = `<div class="ntp web-error popped-page">
+    ${icon('pip')}<h2>Playing in a pop-out window</h2>
+    <p>It floats over your other windows and games (set games to <b>borderless</b> or <b>windowed</b> fullscreen).</p>
+    <div class="pop-keys">
+      <span><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Space</kbd> play / pause</span>
+      <span><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>G</kbd> click-through</span>
+      <span><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>↑</kbd><kbd>↓</kbd> see-through</span>
+      <span><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>←</kbd><kbd>→</kbd> skip 10s</span>
+      <span><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>H</kbd> hide / show</span>
+    </div>
+    <div class="row" style="justify-content:center"><button class="btn primary" id="pop-back">${icon('undo')}Bring it back here</button><button class="btn" id="pop-show">${icon('eye')}Show pop-out</button></div></div>`;
+  $('#pop-back').onclick = () => api.web.popin(t.id);
+  $('#pop-show').onclick = () => api.web.popout(t.id);
+}
+
 // Show/hide the native page view over the content area
 let syncQueued = false;
 function webSync() {
@@ -354,7 +456,7 @@ function webSync() {
     const t = tab();
     const overlay = !$('#ctx').classList.contains('hidden') || !$('#popover').classList.contains('hidden') ||
       !$('#modal-wrap').classList.contains('hidden');
-    if (!isWebTab(t) || !t.created || t.url === WEB_NEWTAB || t.error || overlay) { api.web.hideAll(); return; }
+    if (!isWebTab(t) || !t.created || t.url === WEB_NEWTAB || t.error || t.popped || overlay) { api.web.hideAll(); return; }
     const r = WebState.fullscreen ? { left: 0, top: 0, width: innerWidth, height: innerHeight } : $('#content').getBoundingClientRect();
     api.web.show(t.id, { x: r.left, y: r.top, width: r.width, height: r.height });
   });
@@ -448,12 +550,14 @@ function webMoreMenu() {
     { label: 'Zoom out', icon: 'minus', kbd: 'Ctrl+-', disabled: !real, action: () => api.web.zoom(t.id, Math.max(0.3, (t.zoom || 1) - 0.1)) },
     { label: 'Reset zoom', icon: 'undo', kbd: 'Ctrl+0', disabled: !real || z === 100, action: () => api.web.zoom(t.id, 1) },
     '-',
+    { label: t.popped ? 'Bring video back' : 'Pop out video', icon: 'pip', kbd: 'Ctrl+Shift+O', disabled: !real, action: () => t.popped ? api.web.popin(t.id) : popOutVideo(t) },
     { label: 'Find on page', icon: 'search', kbd: 'Ctrl+F', disabled: !real, action: openFind },
     { label: 'Print…', icon: 'doc', disabled: !real, action: () => api.web.print(t.id) },
     { label: 'Save page as…', icon: 'download', disabled: !real, action: () => api.web.savePage(t.id) },
     { label: 'Copy page address', icon: 'copy', disabled: !real, action: () => { api.copyText(t.url); toast('Address copied'); } },
     { label: 'Pin to new tab page', icon: 'pin', disabled: !real, action: () => pinSiteDialog(null, { url: t.url.replace(/[?#].*$/, ''), title: (t.title || '').split(/ [-|–—] /)[0].slice(0, 40) }) },
     '-',
+    { label: 'History', icon: 'clock', kbd: 'Ctrl+H', action: openHistory },
     { label: 'Clear browsing data…', icon: 'trash', action: clearDataDialog },
     { label: 'Developer tools', icon: 'code', kbd: 'F12', disabled: !real, action: () => api.web.devtools(t.id) },
     { label: 'Worm settings…', icon: 'settings', action: () => openSettings('browser') }
@@ -637,6 +741,15 @@ function setupWeb() {
   api.web.on('web:found', (d) => { if (d.id === tab().id) $('#find-count').textContent = d.matches ? `${d.active} of ${d.matches}` : 'No matches'; });
   api.web.on('web:fullscreen', (d) => { WebState.fullscreen = d.on; document.body.classList.toggle('fullscreen', d.on); webSync(); });
   api.web.on('web:resync', () => webSync());
+  api.web.on('web:popout', (d) => {
+    const t = findTab(d.id);
+    if (!t) return;
+    t.popped = d.on;
+    if (!d.on && d.focus) { const i = tabs.indexOf(t); if (i >= 0 && i !== activeIdx) { activateTab(i); return; } }
+    if (t === tab()) webRender();
+    renderTabs();
+  });
+  api.web.on('web:popoutFailed', (d) => { if (d.reason === 'novideo') toast('No video on this page yet — start it playing, then pop it out', { error: true }); });
   api.web.on('web:blocker', (s) => { WebState.blocker = s; });
   api.web.on('web:key', (d) => {
     const map = {
@@ -648,6 +761,7 @@ function setupWeb() {
       'ctrl+l': () => window._startAddressEdit(),
       'ctrl+d': toggleBookmark,
       'ctrl+f': openFind,
+      'ctrl+h': openHistory,
       'ctrl+,': () => openSettings(),
       'escape': () => { if (WebState.findOpen) closeFind(); else if (tab().loading) api.web.stop(tab().id); }
     };
@@ -672,6 +786,7 @@ function setupWeb() {
   $('#btn-shield').onclick = (e) => { e.stopPropagation(); shieldPopover(); };
   $('#btn-downloads').onclick = (e) => { e.stopPropagation(); downloadsPopover(); };
   $('#btn-webmenu').onclick = (e) => { e.stopPropagation(); webMoreMenu(); };
+  $('#btn-popout').onclick = () => popOutVideo();
 
   const fi = $('#find-input');
   fi.addEventListener('input', () => { const t = tab(); if (fi.value) api.web.find(t.id, fi.value, { findNext: false }); else { api.web.find(t.id, ''); $('#find-count').textContent = ''; } });

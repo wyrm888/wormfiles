@@ -1,6 +1,6 @@
 // Worm — the WormFiles built-in privacy browser (main process side).
 // Each browser tab is a WebContentsView laid over the content area of the window.
-const { app, WebContentsView, ipcMain, session, Menu, clipboard, dialog, shell } = require('electron');
+const { app, WebContentsView, BrowserWindow, ipcMain, session, Menu, clipboard, dialog, shell, globalShortcut, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
@@ -271,7 +271,8 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
       const ctrl = input.control || input.meta;
       const k = input.key;
       let action = null;
-      if (ctrl && !input.shift && /^[tTwWlLfFdD]$/.test(k)) action = 'ctrl+' + k.toLowerCase();
+      if (ctrl && !input.shift && /^[tTwWlLfFdDhH]$/.test(k)) action = 'ctrl+' + k.toLowerCase();
+      else if (ctrl && input.shift && /^[oO]$/.test(k)) { e.preventDefault(); popOut(id).then(r => r !== 'ok' && send('web:popoutFailed', { id, reason: r })); return; }
       else if (ctrl && input.shift && /^[tTnN]$/.test(k)) action = 'ctrl+shift+' + k.toLowerCase();
       else if (ctrl && k === 'Tab') action = input.shift ? 'ctrl+shift+tab' : 'ctrl+tab';
       else if (ctrl && k === ',') action = 'ctrl+,';
@@ -283,12 +284,14 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
       else if (k === 'F5' || (ctrl && /^[rR]$/.test(k))) { if (input.shift) wc.reloadIgnoringCache(); else wc.reload(); e.preventDefault(); return; }
       else if (k === 'F12') { wc.toggleDevTools(); e.preventDefault(); return; }
       else if (k === 'Escape') action = 'escape';
+      if (action && popouts.has(id)) return; // tab shortcuts mean nothing inside the floating video
       if (action) {
         if (action !== 'escape') e.preventDefault();
         send('web:key', { id, action });
       }
     });
     wc.on('context-menu', (_e, p) => pageMenu(id, wc, p));
+    wc.on('dom-ready', () => { if (popouts.has(id)) wc.send('popout:mode', { on: true }); }); // page reloaded inside a pop-out
 
     wc.loadURL(url).catch(() => { /* reported via did-fail-load */ });
     if (!background) emit(id);
@@ -309,6 +312,10 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
       items.push({ label: 'Save image', click: () => wc.downloadURL(p.srcURL) });
       items.push({ label: 'Copy image', click: () => wc.copyImageAt(p.x, p.y) });
       items.push({ label: 'Copy image address', click: () => clipboard.writeText(p.srcURL) });
+      sep();
+    }
+    if (p.mediaType === 'video' && !popouts.has(id)) {
+      items.push({ label: 'Pop out video (floats over games)', click: () => popOut(id).then(r => r !== 'ok' && send('web:popoutFailed', { id, reason: r })) });
       sep();
     }
     if ((p.mediaType === 'video' || p.mediaType === 'audio') && p.srcURL && !p.srcURL.startsWith('blob:')) {
@@ -384,6 +391,7 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
   function enterFullscreen(id) {
     const win = getWin(), v = views.get(id);
     if (!win || !v) return;
+    if (popouts.has(id)) { v.wc.executeJavaScript('document.fullscreenElement && document.exitFullscreen()', true).catch(() => {}); return; }
     hookWindow();
     fsTab = id;
     wasWinFullscreen = win.isFullScreen();
@@ -407,7 +415,8 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
     const v = views.get(id);
     if (!win || !v) return;
     if (fsTab === id) { v.view.setBounds(fullBounds()); v.view.setVisible(true); return; }
-    for (const [oid, o] of views) if (oid !== id) o.view.setVisible(false);
+    if (popouts.has(id)) return; // it's in its own floating window
+    for (const [oid, o] of views) if (oid !== id && !popouts.has(oid)) o.view.setVisible(false);
     if (attachedId !== id) {
       win.contentView.addChildView(v.view); // re-adding moves it to the top
       attachedId = id;
@@ -416,10 +425,11 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
     v.view.setBounds(normalBounds);
     v.view.setVisible(true);
   }
-  function hideAll() { for (const [, o] of views) o.view.setVisible(false); }
+  function hideAll() { for (const [oid, o] of views) if (!popouts.has(oid)) o.view.setVisible(false); }
   function destroy(id) {
     const v = views.get(id);
     if (!v) return;
+    if (popouts.has(id)) popIn(id, { silent: true });
     const win = getWin();
     try { win && win.contentView.removeChildView(v.view); } catch { /* already removed */ }
     wcToTab.delete(v.wc.id);
@@ -429,6 +439,202 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
     if (fsTab === id) { fsTab = null; const w = getWin(); if (w && !wasWinFullscreen && w.isFullScreen()) w.setFullScreen(false); send('web:fullscreen', { id, on: false }); }
     try { v.wc.close(); } catch { /* gone */ }
   }
+
+
+  // =====================================================================
+  // Pop-out video: the tab itself moves into a small always-on-top window
+  // (same page, so the video keeps playing, streams don't reconnect, logins stay)
+  // =====================================================================
+  const popouts = new Map(); // tabId -> { win, ghost, opacity, hidden, timer, drag }
+  let lastPop = null;
+  const BORDER = 3;
+  const POP_FIND_JS = `(() => {
+    const vs = [...document.querySelectorAll('video')].filter(v => v.readyState > 0 || v.currentSrc);
+    if (!vs.length) return null;
+    const score = v => { const r = v.getBoundingClientRect(); return (v.paused ? 0 : 1e9) + r.width * r.height; };
+    vs.sort((a, b) => score(b) - score(a));
+    return { w: vs[0].videoWidth || 16, h: vs[0].videoHeight || 9 };
+  })()`;
+  const POP_TOGGLE_JS = `(() => { const v = document.querySelector('.worm-pop-fill video, video.worm-pop-fill') || document.querySelector('video'); if (v) v.paused ? v.play() : v.pause(); })()`;
+  const popSeekJs = (s) => `(() => { const v = document.querySelector('.worm-pop-fill video, video.worm-pop-fill') || document.querySelector('video'); if (v && isFinite(v.duration)) v.currentTime = Math.max(0, Math.min(v.duration - 0.5, v.currentTime + (${s}))); })()`;
+
+  function popLayout(id) {
+    const p = popouts.get(id), v = views.get(id);
+    if (!p || !v || p.win.isDestroyed()) return;
+    const [w, h] = p.win.getContentSize();
+    v.view.setBounds({ x: BORDER, y: BORDER, width: Math.max(1, w - BORDER * 2), height: Math.max(1, h - BORDER * 2) });
+  }
+  function onScreen(b) {
+    return screen.getAllDisplays().some(d => {
+      const a = d.workArea;
+      return b.x + 60 > a.x && b.y + 30 > a.y && b.x + 60 < a.x + a.width && b.y + 30 < a.y + a.height;
+    });
+  }
+
+  let popAccent = '#e11d2e';
+  let mainHooked = false;
+  async function popOut(id, accent) {
+    if (accent && /^#[0-9a-f]{6}$/i.test(accent)) popAccent = accent;
+    const v = views.get(id);
+    const main = getWin();
+    if (!v || v.wc.isDestroyed() || !main) return 'gone';
+    if (popouts.has(id)) { const p = popouts.get(id); p.win.showInactive(); p.hidden = false; return 'ok'; }
+    let info = null;
+    try { info = await v.wc.executeJavaScript(POP_FIND_JS, true); } catch { info = null; }
+    if (!info) return 'novideo';
+    if (fsTab === id) {
+      await v.wc.executeJavaScript('document.fullscreenElement && document.exitFullscreen()', true).catch(() => {});
+      leaveFullscreen(id);
+    }
+    const aspect = Math.min(4, Math.max(0.3, info.w / info.h));
+    const saved = getSettings().popoutBounds;
+    const width = Math.round(Math.min(1600, Math.max(220, saved?.width || 520)));
+    const height = Math.round((width - BORDER * 2) / aspect + BORDER * 2);
+    const wa = screen.getPrimaryDisplay().workArea;
+    let x = wa.x + wa.width - width - 24, y = wa.y + wa.height - height - 24;
+    if (saved && onScreen({ x: saved.x, y: saved.y })) { x = saved.x; y = saved.y; }
+
+    const pw = new BrowserWindow({
+      x, y, width, height, minWidth: 200, minHeight: 112, show: false, frame: false, resizable: true,
+      alwaysOnTop: true, maximizable: false, fullscreenable: false, skipTaskbar: false,
+      backgroundColor: popAccent, title: (v.wc.getTitle() || 'Video') + ' — Worm pop-out',
+      icon: path.join(__dirname, '..', 'build', 'icon.png'),
+      webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false }
+    });
+    pw.setAlwaysOnTop(true, 'screen-saver');
+    pw.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    pw.setAspectRatio(aspect, { width: BORDER * 2, height: BORDER * 2 });
+
+    // Move the page out of the WormFiles window and into the pop-out
+    try { main.contentView.removeChildView(v.view); } catch { /* not attached */ }
+    if (attachedId === id) attachedId = null;
+    pw.contentView.addChildView(v.view);
+    const p = { win: pw, ghost: false, opacity: 1, hidden: false, timer: null, drag: null, saveTimer: null };
+    popouts.set(id, p);
+    lastPop = id;
+    popLayout(id);
+    v.view.setVisible(true);
+    v.wc.setBackgroundThrottling(false); // keep playing smoothly while a game has focus
+    v.wc.send('popout:mode', { on: true });
+
+    pw.on('resize', () => popLayout(id));
+    const remember = () => {
+      clearTimeout(p.saveTimer);
+      p.saveTimer = setTimeout(() => {
+        if (pw.isDestroyed()) return;
+        const s = getSettings(); s.popoutBounds = pw.getBounds(); saveSettings();
+      }, 400);
+    };
+    pw.on('moved', remember);
+    pw.on('resized', remember);
+    pw.on('blur', () => { if (!pw.isDestroyed()) pw.setAlwaysOnTop(true, 'screen-saver'); });
+    // Games that grab the screen can push other windows down; keep putting it back on top
+    p.timer = setInterval(() => { if (!pw.isDestroyed() && pw.isVisible() && !pw.isFocused()) pw.setAlwaysOnTop(true, 'screen-saver'); }, 2000);
+    pw.on('close', (e) => { if (popouts.get(id) === p) { e.preventDefault(); popIn(id, { pause: true }); } });
+    if (!mainHooked) { mainHooked = true; main.on('close', () => { for (const pid of [...popouts.keys()]) popIn(pid, { silent: true }); }); }
+
+    pw.showInactive();
+    v.wc.focus();
+    popShortcuts();
+    send('web:popout', { id, on: true });
+    return 'ok';
+  }
+
+  function popIn(id, { pause = false, focusMain = false, silent = false } = {}) {
+    const p = popouts.get(id);
+    if (!p) return;
+    popouts.delete(id);
+    clearInterval(p.timer);
+    const v = views.get(id);
+    if (v && !v.wc.isDestroyed()) {
+      try { p.win.contentView.removeChildView(v.view); } catch { /* gone */ }
+      v.view.setVisible(false);
+      v.wc.setBackgroundThrottling(true);
+      v.wc.send('popout:mode', { on: false });
+      if (pause) v.wc.executeJavaScript("document.querySelectorAll('video').forEach(x => x.pause())", true).catch(() => {});
+    }
+    if (!p.win.isDestroyed()) p.win.destroy();
+    if (lastPop === id) lastPop = popouts.size ? [...popouts.keys()].pop() : null;
+    popShortcuts();
+    if (!silent) send('web:popout', { id, on: false, focus: focusMain });
+    if (focusMain) {
+      const w = getWin();
+      if (w) { if (w.isMinimized()) w.restore(); w.show(); w.focus(); }
+    }
+  }
+
+  function setGhost(id, on) {
+    const p = popouts.get(id), v = views.get(id);
+    if (!p) return;
+    p.ghost = on;
+    p.win.setIgnoreMouseEvents(on);
+    p.win.setFocusable(!on);
+    if (v) v.wc.send('popout:do', { ghost: on });
+  }
+  function setOpacity(id, val) {
+    const p = popouts.get(id), v = views.get(id);
+    if (!p) return;
+    p.opacity = Math.min(1, Math.max(0.15, val));
+    p.win.setOpacity(p.opacity);
+    if (v) v.wc.send('popout:do', { opacity: p.opacity });
+  }
+  function scalePop(id, factor) {
+    const p = popouts.get(id);
+    if (!p) return;
+    const b = p.win.getBounds();
+    const w = Math.round(Math.min(2400, Math.max(200, b.width * factor)));
+    const h = Math.round((w - BORDER * 2) * ((b.height - BORDER * 2) / (b.width - BORDER * 2)) + BORDER * 2);
+    p.win.setBounds({ x: Math.round(b.x + (b.width - w) / 2), y: Math.round(b.y + (b.height - h) / 2), width: w, height: h });
+  }
+
+  // Global hotkeys, only while a pop-out is open (so they work while you're in a game)
+  const POP_KEYS = {
+    'CommandOrControl+Alt+G': () => lastPop != null && setGhost(lastPop, !popouts.get(lastPop).ghost),
+    'CommandOrControl+Alt+Space': () => { const v = lastPop != null && views.get(lastPop); if (v) v.wc.executeJavaScript(POP_TOGGLE_JS, true).catch(() => {}); },
+    'CommandOrControl+Alt+Right': () => { const v = lastPop != null && views.get(lastPop); if (v) v.wc.executeJavaScript(popSeekJs(10), true).catch(() => {}); },
+    'CommandOrControl+Alt+Left': () => { const v = lastPop != null && views.get(lastPop); if (v) v.wc.executeJavaScript(popSeekJs(-10), true).catch(() => {}); },
+    'CommandOrControl+Alt+Up': () => lastPop != null && setOpacity(lastPop, popouts.get(lastPop).opacity + 0.1),
+    'CommandOrControl+Alt+Down': () => lastPop != null && setOpacity(lastPop, popouts.get(lastPop).opacity - 0.1),
+    'CommandOrControl+Alt+H': () => {
+      const p = lastPop != null && popouts.get(lastPop);
+      if (!p) return;
+      p.hidden = !p.hidden;
+      if (p.hidden) p.win.hide(); else p.win.showInactive();
+    }
+  };
+  let keysOn = false;
+  function popShortcuts() {
+    if (popouts.size && !keysOn) {
+      keysOn = true;
+      for (const [k, fn] of Object.entries(POP_KEYS)) { try { globalShortcut.register(k, fn); } catch { /* taken by another app */ } }
+    } else if (!popouts.size && keysOn) {
+      keysOn = false;
+      for (const k of Object.keys(POP_KEYS)) { try { globalShortcut.unregister(k); } catch { /* ignore */ } }
+    }
+  }
+  app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch { /* ignore */ } });
+
+  const popOf = (e) => { const id = wcToTab.get(e.sender.id); return id != null && popouts.has(id) ? id : null; };
+  ipcMain.on('popout:drag', (e, d) => {
+    const id = popOf(e);
+    if (id == null) return;
+    const p = popouts.get(id);
+    if (d.phase === 'start') { const [wx, wy] = p.win.getPosition(); p.drag = { sx: d.x, sy: d.y, wx, wy }; return; }
+    if (d.phase === 'move' && p.drag) p.win.setPosition(Math.round(p.drag.wx + d.x - p.drag.sx), Math.round(p.drag.wy + d.y - p.drag.sy));
+    if (d.phase === 'end') p.drag = null;
+  });
+  ipcMain.on('popout:cmd', (e, d) => {
+    const id = popOf(e);
+    if (id == null || !d) return;
+    lastPop = id;
+    if (d.cmd === 'opacity') setOpacity(id, +d.value);
+    else if (d.cmd === 'ghost') setGhost(id, !popouts.get(id).ghost);
+    else if (d.cmd === 'back') popIn(id, { focusMain: true });
+    else if (d.cmd === 'close') popIn(id, { pause: true });
+    else if (d.cmd === 'scale') scalePop(id, +d.value || 1);
+  });
+  ipcMain.handle('web:popout', (_e, id, accent) => popOut(id, accent));
+  ipcMain.handle('web:popin', (_e, id, opts) => popIn(id, { focusMain: true, ...(opts || {}) }));
 
   // ---------- Page shield (YouTube) ----------
   ipcMain.on('web:shieldConfig', (e) => { e.returnValue = { youtube: !!getSettings().webBlockAds }; });
@@ -466,6 +672,22 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
       if (out.length >= limit) break;
     }
     return out;
+  });
+  // Full history for the Ctrl+H window
+  ipcMain.handle('web:historyAll', (_e, q, limit = 600) => {
+    const s = (q || '').toLowerCase().trim();
+    const out = [];
+    for (const h of history) {
+      if (!s || h.url.toLowerCase().includes(s) || (h.title || '').toLowerCase().includes(s)) out.push(h);
+      if (out.length >= limit) break;
+    }
+    return { items: out, total: history.length };
+  });
+  ipcMain.handle('web:historyDelete', (_e, urls) => {
+    if (urls === 'all') history = [];
+    else { const set = new Set(urls || []); history = history.filter(h => !set.has(h.url)); }
+    saveHistory();
+    return history.length;
   });
   ipcMain.handle('web:topSites', () => {
     const bySite = new Map();

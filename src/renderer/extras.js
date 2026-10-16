@@ -498,3 +498,146 @@ function setupExtras() {
   renderMailButton();
   startMailInBackground();
 }
+
+// =====================================================================
+// Theme files (.wormtheme) — share your look with friends
+// =====================================================================
+async function importThemeFile(path) {
+  const r = await api.themeImport(path || null);
+  if (!r) return false;
+  if (r.error) { toast(r.error, { error: true }); return false; }
+  const id = 'custom-' + Date.now().toString(36);
+  const theme = { ...r.colors, name: r.name, author: r.author, custom: true };
+  const patch = {
+    customThemes: { ...(S.customThemes || {}), [id]: theme },
+    theme: id, accent: r.colors.accent,
+    bgOpacity: r.settings.bgOpacity, bgBlur: r.settings.bgBlur, panelAlpha: r.settings.panelAlpha,
+    radius: r.settings.radius, density: r.settings.density
+  };
+  if (r.bgImage) patch.bgImage = r.bgImage;
+  if (r.settings.customCss) patch.customCss = r.settings.customCss;
+  setS(patch, { appearance: true });
+  toast(`Theme “${r.name}” installed${r.author ? ' (by ' + r.author + ')' : ''}`);
+  return true;
+}
+function exportThemeDialog() {
+  const cur = themeById(S.theme) || THEMES.crimson;
+  const body = `<div class="field"><label>Theme name</label><input class="text-input" id="tx-name" maxlength="40" value="${esc(cur.custom ? cur.name : 'My ' + cur.name)}" style="width:100%"></div>
+    <div class="field"><label>Made by (optional)</label><input class="text-input" id="tx-author" maxlength="40" value="${esc(S.themeAuthor || '')}" style="width:100%"></div>
+    <p class="tip">${S.bgImage ? 'Your background image is included.' : 'No background image set.'}${S.customCss ? ' Your custom CSS is included.' : ''}</p>`;
+  openModal({
+    title: 'Share my theme', body,
+    buttons: [{ label: 'Cancel' }, {
+      label: 'Save theme file…', primary: true, action: async () => {
+        const name = $('#tx-name').value.trim() || 'My theme';
+        const author = $('#tx-author').value.trim();
+        setS({ themeAuthor: author });
+        const out = await api.themeExport({
+          name, author,
+          colors: { bg: cur.bg, surface: cur.surface, surface2: cur.surface2, text: cur.text, dim: cur.dim, border: cur.border, accent: S.accent || cur.accent, folderFront: cur.folderFront, dark: !!cur.dark },
+          settings: { bgOpacity: S.bgOpacity, bgBlur: S.bgBlur, panelAlpha: S.panelAlpha, radius: S.radius, density: S.density, customCss: S.customCss || '' },
+          bgImage: S.bgImage || ''
+        });
+        if (out) toast('Theme saved', { action: { label: 'Show file', fn: () => api.reveal(out) } });
+      }
+    }]
+  });
+  setTimeout(() => $('#tx-name') && $('#tx-name').select(), 30);
+}
+
+// =====================================================================
+// Background job cards (bottom-left): long tasks keep running while you browse
+// =====================================================================
+function jobCard(id, { title, sub = '', pct = null, onCancel = null, done = false, error = false, actions = [] }) {
+  let box = $('#jobs');
+  if (!box) { box = document.createElement('div'); box.id = 'jobs'; document.body.appendChild(box); }
+  let el = box.querySelector(`[data-job="${id}"]`);
+  if (!el) { el = document.createElement('div'); el.className = 'job'; el.dataset.job = id; box.appendChild(el); }
+  el.classList.toggle('done', done);
+  el.classList.toggle('error', error);
+  el.innerHTML = `<div class="job-head"><b>${esc(title)}</b><button class="icon-btn tiny job-x" title="${onCancel ? 'Cancel' : 'Dismiss'}">${icon('x')}</button></div>
+    <div class="job-sub dim">${esc(sub)}</div>
+    ${pct != null ? `<div class="job-bar"><i style="width:${Math.max(2, pct)}%"></i></div>` : ''}
+    ${actions.length ? `<div class="job-actions">${actions.map((a, i) => `<button class="btn small" data-a="${i}">${esc(a.label)}</button>`).join('')}</div>` : ''}`;
+  el.querySelector('.job-x').onclick = () => { if (onCancel) onCancel(); else el.remove(); };
+  el.querySelectorAll('[data-a]').forEach(b => b.onclick = () => { actions[+b.dataset.a].fn(); });
+  if (done || error) setTimeout(() => el.isConnected && el.remove(), 20000);
+  return el;
+}
+function jobDone(id) { const el = $(`#jobs [data-job="${id}"]`); if (el) el.remove(); }
+
+// =====================================================================
+// Video shrinker: fit a video under a file size (Discord etc.)
+// =====================================================================
+const SHRINKABLE = new Set(['mp4', 'm4v', 'mov', 'mkv', 'webm', 'avi', 'wmv', 'flv', 'ts', 'mts', 'm2ts', '3gp', 'mpg', 'mpeg', 'ogv', 'gif']);
+const SHRINK_PRESETS = [[10, 'Discord'], [25, ''], [50, 'Nitro Basic'], [100, ''], [500, 'Nitro']];
+let shrinkSeq = 0;
+async function openShrinkDialog(e) {
+  const probe = await api.videoProbe(e.path);
+  if (probe.error) { toast(probe.error, { error: true }); return; }
+  const { info, size } = probe;
+  const sizeMB = size / 1048576;
+  let mb = S.shrinkLastMB || 10;
+  const body = document.createElement('div');
+  body.className = 'shrink';
+  body.innerHTML = `<div class="shrink-file">${icon('video')}<div><b>${esc(e.name)}</b>
+      <div class="dim">${fmtSize(size)} · ${fmtTime(info.duration)} · ${info.width}×${info.height}${info.fps ? ' · ' + Math.round(info.fps) + ' fps' : ''}</div></div></div>
+    <div class="field"><label>Make it fit under</label>
+      <div class="shrink-chips">${SHRINK_PRESETS.map(([v, l]) => `<button class="chip-btn" data-mb="${v}">${v} MB${l ? `<small>${l}</small>` : ''}</button>`).join('')}
+      <span class="shrink-custom"><input class="text-input" id="shrink-mb" type="number" min="0.5" step="0.5" value="${mb}"> MB</span></div></div>
+    <div class="shrink-est"></div>
+    <p class="tip">A new file is saved next to the original as “${esc(e.name.replace(/\.[^.]+$/, ''))} (${'{size}'} MB).mp4”. The original isn't changed.</p>`;
+  const est = body.querySelector('.shrink-est'), input = body.querySelector('#shrink-mb');
+  const update = async () => {
+    mb = Math.max(0.5, +input.value || 10);
+    body.querySelectorAll('[data-mb]').forEach(b => b.classList.toggle('on', +b.dataset.mb === mb));
+    body.querySelector('.tip').innerHTML = body.querySelector('.tip').innerHTML.replace(/\((?:\{size\}|[\d.]+) MB\)/, `(${mb} MB)`);
+    if (sizeMB <= mb) { est.innerHTML = `<div class="shrink-ok">${icon('check')} This video is already under ${mb} MB.</div>`; return; }
+    const p = await api.videoPlan(info, mb);
+    if (!p.possible) { est.innerHTML = `<div class="shrink-bad">${icon('info')} ${mb} MB is too small for a ${fmtTime(info.duration)} video. Pick a bigger size.</div>`; return; }
+    const lvl = { Great: 4, Good: 3, OK: 2, Low: 1, 'Very low': 0 }[p.quality];
+    est.innerHTML = `<div class="shrink-q">
+      <div class="q-bars">${[0, 1, 2, 3, 4].map(i => `<i class="${i <= lvl ? 'on' : ''}"></i>`).join('')}</div>
+      <div><b>${p.quality} quality</b><div class="dim">About ${p.height}p${p.fps ? ', 30 fps' : ''}${p.audio ? `, ${p.audio} kbps sound` : ', no sound'} · ${Math.min(99, Math.round(100 - mb / sizeMB * 100))}% smaller</div></div></div>`;
+  };
+  body.querySelectorAll('[data-mb]').forEach(b => b.onclick = () => { input.value = b.dataset.mb; update(); });
+  input.oninput = update;
+  update();
+  openModal({
+    title: 'Shrink video', body,
+    buttons: [{ label: 'Cancel' }, {
+      label: 'Shrink', primary: true, action: () => {
+        if (sizeMB <= mb) { toast(`Already under ${mb} MB — nothing to do`); return; }
+        setS({ shrinkLastMB: mb });
+        runShrink(e, mb);
+      }
+    }]
+  });
+}
+async function runShrink(e, mb) {
+  const id = ++shrinkSeq;
+  const title = `Shrinking ${e.name}`;
+  const cancel = () => { api.videoCancel(id); };
+  jobCard('shrink' + id, { title, sub: `Getting ready… (target ${mb} MB)`, pct: 0, onCancel: cancel });
+  const off = (d) => {
+    if (d.id !== id) return;
+    jobCard('shrink' + id, { title, sub: `${d.attempt > 1 ? 'Squeezing a bit more · ' : ''}Step ${d.pass} of 2 · ${d.pct}%`, pct: d.pct, onCancel: cancel });
+  };
+  PROGRESS_LISTENERS.add(off);
+  const r = await api.videoShrink({ id, file: e.path, targetMB: mb });
+  PROGRESS_LISTENERS.delete(off);
+  if (r.error === 'cancelled') { jobDone('shrink' + id); toast('Stopped shrinking'); return; }
+  if (r.error) { jobCard('shrink' + id, { title: "Couldn't shrink the video", sub: r.error, error: true }); return; }
+  if (r.already) { jobDone('shrink' + id); toast(`Already under ${mb} MB`); return; }
+  jobCard('shrink' + id, {
+    title: r.over ? 'Done (a little over the size)' : 'Video shrunk', done: true,
+    sub: `${baseName(r.out)} · ${fmtSize(r.size)}`,
+    actions: [
+      { label: 'Show file', fn: () => { jobDone('shrink' + id); navigate(parentOf(r.out), { keepSelection: r.out }); } },
+      { label: 'Copy file', fn: async () => { clip = { paths: [r.out], mode: 'copy' }; const ok = await api.copyFiles([r.out]); toast(ok ? 'Copied — paste it into Discord with Ctrl+V' : 'Copied inside WormFiles'); } }
+    ]
+  });
+  if (samePath(parentOf(r.out), tab().path)) load(tab(), { silent: true });
+}
+const PROGRESS_LISTENERS = new Set();
+window.wf.onVideoProgress((d) => PROGRESS_LISTENERS.forEach(f => f(d)));

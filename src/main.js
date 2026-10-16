@@ -12,6 +12,9 @@ const integration = require('./integration');
 const archive = require('./archive');
 const spacemap = require('./spacemap');
 const mediatags = require('./mediatags');
+const themefile = require('./themefile');
+const video = require('./video');
+const dupes = require('./dupes');
 
 // ---------- Custom protocol so the UI can show local images/videos safely ----------
 protocol.registerSchemesAsPrivileged([
@@ -30,9 +33,8 @@ let pendingTargets = integration.parseTargets(process.argv);
 let earlySettings = {};
 try { earlySettings = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf8')); } catch { /* first run */ }
 if (earlySettings.gpuBoost !== false) {
-  app.commandLine.appendSwitch('ignore-gpu-blocklist');       // use the graphics card even if Chrome would refuse it
+  // (ignore-gpu-blocklist and enable-zero-copy were removed: on some graphics cards they made videos blurry or cropped)
   app.commandLine.appendSwitch('enable-gpu-rasterization');   // draw pages on the graphics card
-  app.commandLine.appendSwitch('enable-zero-copy');           // fewer memory copies when drawing
   app.commandLine.appendSwitch('enable-smooth-scrolling');
 }
 // Bigger browser cache (512 MB) so sites you revisit load more from disk
@@ -374,7 +376,57 @@ function applyMica(on) {
 ipcMain.handle('window:mica', (_e, on) => applyMica(on));
 
 // ---------- File system IPC ----------
+// ---------- Recent files: Windows' own Recent list + new downloads + files opened in WormFiles ----------
+function addRecent(p) {
+  if (typeof p !== 'string' || !p || archive.splitVirtual(p) && !fs.existsSync(p)) return;
+  const list = (settings.recentOpened || []).filter(x => x.p !== p);
+  list.unshift({ p, t: Date.now() });
+  settings.recentOpened = list.slice(0, 200);
+  saveSettings();
+  try { app.addRecentDocument(p); } catch { /* not supported */ }
+}
+ipcMain.handle('recent:add', (_e, p) => addRecent(p));
+
+async function recentList() {
+  const used = new Map(); // path -> last used time
+  const note = (p, t) => { if (p && (!used.has(p) || used.get(p) < t)) used.set(p, t); };
+  const cutoff = Date.now() - 60 * 86400000;
+  for (const r of settings.recentOpened || []) if (r.t > cutoff) note(r.p, r.t);
+  if (process.platform === 'win32') {
+    const dir = path.join(app.getPath('appData'), 'Microsoft', 'Windows', 'Recent');
+    let names = [];
+    try { names = (await fsp.readdir(dir)).filter(n => n.toLowerCase().endsWith('.lnk')); } catch { /* no Recent folder */ }
+    const stats = await Promise.allSettled(names.map(n => fsp.stat(path.join(dir, n))));
+    const fresh = names.map((n, i) => ({ n, t: stats[i].status === 'fulfilled' ? stats[i].value.mtimeMs : 0 }))
+      .filter(x => x.t > cutoff).sort((a, b) => b.t - a.t).slice(0, 400);
+    for (const { n, t } of fresh) {
+      try { const l = shell.readShortcutLink(path.join(dir, n)); if (l && l.target) note(l.target, t); } catch { /* broken shortcut */ }
+    }
+  }
+  try { // new downloads count as recent too
+    const dl = app.getPath('downloads');
+    const ents = await fsp.readdir(dl, { withFileTypes: true });
+    const st = await Promise.allSettled(ents.filter(d => d.isFile()).map(d => fsp.stat(path.join(dl, d.name)).then(s => [d.name, s])));
+    for (const r of st) if (r.status === 'fulfilled' && r.value[1].mtimeMs > Date.now() - 14 * 86400000) note(path.join(dl, r.value[0]), r.value[1].mtimeMs);
+  } catch { /* no downloads folder */ }
+  const items = [...used.entries()].sort((a, b) => b[1] - a[1]).slice(0, 300);
+  const stats = await Promise.allSettled(items.map(([p]) => fsp.stat(p)));
+  const out = [];
+  items.forEach(([p, t], i) => {
+    const st = stats[i].status === 'fulfilled' ? stats[i].value : null;
+    if (!st || !st.isFile()) return; // deleted, moved, or a folder
+    const name = path.basename(p);
+    if (/^desktop\.ini$/i.test(name)) return;
+    const e = entryInfo(path.dirname(p), { name, isDirectory: () => false, isFile: () => true }, st);
+    e.fileMtime = e.mtime;
+    e.mtime = t; // "Last used"
+    out.push(e);
+  });
+  return out;
+}
+
 ipcMain.handle('fs:list', async (_e, dir) => {
+  if (dir === '::recent') return recentList();
   let dirents;
   try {
     dirents = await fsp.readdir(dir, { withFileTypes: true });
@@ -482,7 +534,8 @@ ipcMain.handle('app:explorer', (_e, p) => {
 
 ipcMain.handle('fs:open', async (_e, p) => {
   // Something inside an archive: unpack it to a temporary folder first
-  if (!fs.existsSync(p) && archive.splitVirtual(p)) {
+  if (fs.existsSync(p)) addRecent(p);
+  else if (archive.splitVirtual(p)) {
     try { p = await archive.extractToTemp(p); } catch (e) { return e.message; }
   }
   const err = await shell.openPath(p);
@@ -752,6 +805,70 @@ ipcMain.handle('organize:undo', async (_e, { moves, createdDirs }) => {
     try { if ((await fsp.readdir(d)).length === 0) await fsp.rmdir(d); } catch { /* not empty */ }
   }
   return restored;
+});
+
+// ---------- Video tools ----------
+ipcMain.handle('video:probe', async (_e, file) => {
+  try {
+    const info = await video.probe(file);
+    const size = (await fsp.stat(file)).size;
+    return { info, size };
+  } catch (err) { return { error: err.message || String(err) }; }
+});
+ipcMain.handle('video:plan', (_e, info, mb) => video.plan(info, mb * 1024 * 1024 * 0.995));
+ipcMain.handle('video:shrink', async (_e, job) => {
+  try { return await video.shrink(job, (d) => send('video:progress', d)); }
+  catch (err) { return { error: err.message === 'cancelled' ? 'cancelled' : (err.message || String(err)) }; }
+});
+ipcMain.handle('video:cancel', (_e, id) => video.cancel(id));
+
+// Put files on the Windows clipboard (so Ctrl+V works in Discord, Explorer, etc.)
+ipcMain.handle('clipboard:files', (_e, paths) => new Promise((resolve) => {
+  if (process.platform !== 'win32' || !Array.isArray(paths) || !paths.length) return resolve(false);
+  const list = paths.filter(p => typeof p === 'string' && fs.existsSync(p)).map(p => "'" + p.replace(/'/g, "''") + "'").join(',');
+  if (!list) return resolve(false);
+  const ps = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Set-Clipboard -LiteralPath ${list}`], { windowsHide: true });
+  ps.on('error', () => resolve(false));
+  ps.on('close', (code) => resolve(code === 0));
+}));
+
+// ---------- Image tools: read bytes in, write the edited image out ----------
+ipcMain.handle('fs:readBytes', async (_e, p, max = 200 * 1024 * 1024) => {
+  if (!fs.existsSync(p) && archive.splitVirtual(p)) p = await archive.extractToTemp(p);
+  const st = await fsp.stat(p);
+  if (st.size > max) throw new Error('That file is too big to edit here.');
+  const b = await fsp.readFile(p);
+  return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
+});
+ipcMain.handle('image:save', async (_e, { source, ext, data, replace, suffix }) => {
+  const dir = path.dirname(source);
+  const base = path.basename(source).replace(/\.[^.]+$/, '');
+  const buf = Buffer.from(data);
+  if (replace) {
+    // Old file goes to the Recycle Bin, the new one takes its name (with the new extension if the format changed)
+    const target = path.join(dir, base + '.' + ext);
+    await shell.trashItem(source);
+    if (target !== source && fs.existsSync(target)) await shell.trashItem(target);
+    await fsp.writeFile(target, buf);
+    return target;
+  }
+  let out = path.join(dir, `${base} (${suffix || 'edited'}).${ext}`);
+  for (let i = 2; fs.existsSync(out); i++) out = path.join(dir, `${base} (${suffix || 'edited'} ${i}).${ext}`);
+  await fsp.writeFile(out, buf);
+  return out;
+});
+
+// ---------- Duplicate finder ----------
+ipcMain.handle('dup:scan', async (_e, id, root, opts) => {
+  try { return await dupes.scan(id, root, opts, (d) => send('dup:progress', d)); }
+  catch (err) { return { error: err.message || String(err) }; }
+});
+ipcMain.handle('dup:cancel', (_e, id) => dupes.cancel(id));
+
+// ---------- Theme files ----------
+ipcMain.handle('theme:export', (_e, t) => themefile.exportTheme(win, t));
+ipcMain.handle('theme:import', async (_e, p) => {
+  try { return await themefile.importTheme(win, p); } catch (err) { return { error: err.message || String(err) }; }
 });
 
 // ---------- Misc ----------

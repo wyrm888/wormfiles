@@ -134,3 +134,185 @@ function youtubeMainWorld() {
     }
   }, 250);
 }
+
+// =====================================================================
+// Pop-out mode: when this tab is moved into the floating video window, make the
+// video fill the window and add a small control bar (shows when you move the mouse).
+// =====================================================================
+const POP_CSS = `
+html.worm-pop, html.worm-pop body { overflow: hidden !important; background: #000 !important; }
+html.worm-pop .worm-pop-anc {
+  transform: none !important; filter: none !important; perspective: none !important; contain: none !important;
+  will-change: auto !important; backdrop-filter: none !important; isolation: auto !important; z-index: auto !important;
+  clip-path: none !important; mask: none !important;
+}
+html.worm-pop .worm-pop-anc > :not(.worm-pop-anc):not(.worm-pop-fill):not(#worm-pop-ui) { opacity: 0 !important; pointer-events: none !important; }
+html.worm-pop .worm-pop-fill {
+  position: fixed !important; inset: 0 !important; top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important;
+  width: 100vw !important; height: 100vh !important; max-width: none !important; max-height: none !important;
+  min-width: 0 !important; min-height: 0 !important; margin: 0 !important; padding: 0 !important; border: 0 !important;
+  border-radius: 0 !important; transform: none !important; z-index: 2147483646 !important; background: #000 !important;
+}
+html.worm-pop video.worm-pop-fill, html.worm-pop .worm-pop-fill video { object-fit: contain !important; }
+`;
+let pop = null;
+
+function popFindVideo() {
+  const vs = [...document.querySelectorAll('video')].filter(v => v.readyState > 0 || v.currentSrc);
+  if (!vs.length) return null;
+  const score = v => { const r = v.getBoundingClientRect(); return (v.paused ? 0 : 1e9) + r.width * r.height; };
+  return vs.sort((a, b) => score(b) - score(a))[0];
+}
+// The box to stretch: the site's own player (keeps its controls and captions), or just the video
+function popTargetFor(v) {
+  const h = location.hostname;
+  if (/youtube/.test(h)) { const t = v.closest('#movie_player, .html5-video-player'); if (t) return t; }
+  if (/twitch\.tv$/.test(h)) { const t = v.closest('[data-a-target="video-player"], .video-player__container, .video-player'); if (t) return t; }
+  if (/kick\.com$/.test(h)) { const t = v.closest('#injected-embedded-channel-player-video, .video-player'); if (t) return t; }
+  const vr = v.getBoundingClientRect();
+  let t = v, el = v.parentElement;
+  for (let i = 0; el && el !== document.body && i < 6; i++, el = el.parentElement) {
+    const r = el.getBoundingClientRect();
+    if (Math.abs(r.width - vr.width) > 8 || Math.abs(r.height - vr.height) > 8) break;
+    t = el;
+  }
+  return t;
+}
+function popUnmark() {
+  document.querySelectorAll('.worm-pop-fill, .worm-pop-anc').forEach(e => e.classList.remove('worm-pop-fill', 'worm-pop-anc'));
+}
+function popMark() {
+  if (!pop) return;
+  const v = popFindVideo();
+  if (!v) return;
+  const t = popTargetFor(v);
+  if (pop.target === t && t.isConnected && t.classList.contains('worm-pop-fill')) return;
+  popUnmark();
+  pop.target = t;
+  t.classList.add('worm-pop-fill');
+  for (let a = t.parentElement; a; a = a.parentElement) a.classList.add('worm-pop-anc');
+  setTimeout(() => window.dispatchEvent(new Event('resize')), 50); // let the site's player re-measure
+}
+
+const POP_ICONS = {
+  back: '<path d="M10 14L4 8l6-6"/><path d="M4 8h10a6 6 0 0 1 0 12h-3"/>',
+  ghost: '<path d="M6 21V10a6 6 0 0 1 12 0v11l-3-2-3 2-3-2z"/><path d="M10 10h.01M14 10h.01"/>',
+  x: '<path d="M6 6l12 12M18 6L6 18"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'
+};
+const popIco = (n) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${POP_ICONS[n]}</svg>`;
+
+function popBuildUi() {
+  const host = document.createElement('div');
+  host.id = 'worm-pop-ui';
+  host.style.cssText = 'position:fixed;inset:0 0 auto 0;height:0;z-index:2147483647;';
+  const root = host.attachShadow({ mode: 'closed' });
+  root.innerHTML = `<style>
+    :host { all: initial; }
+    .bar { position: fixed; top: 0; left: 0; right: 0; height: 36px; display: flex; align-items: center; gap: 2px; padding: 0 4px 0 10px;
+      background: linear-gradient(rgb(0 0 0 / .85), rgb(0 0 0 / .55)); color: #fff; font: 600 12px "Segoe UI", system-ui, sans-serif;
+      opacity: 0; transition: opacity .2s; user-select: none; }
+    .bar.show, .bar:hover { opacity: 1; }
+    .drag { flex: 1; min-width: 0; height: 100%; display: flex; align-items: center; cursor: grab; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .drag:active { cursor: grabbing; }
+    .drag span { overflow: hidden; text-overflow: ellipsis; opacity: .85; }
+    button { all: unset; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 7px; cursor: pointer; flex: none; }
+    button:hover { background: rgb(255 255 255 / .18); }
+    button.on { color: #ff4d6a; }
+    svg { width: 16px; height: 16px; }
+    .op { display: flex; align-items: center; gap: 4px; }
+    input { width: 64px; accent-color: #e11d2e; cursor: pointer; }
+    .msg { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); max-width: 86vw; padding: 10px 14px; border-radius: 10px;
+      background: rgb(0 0 0 / .8); color: #fff; font: 600 13px "Segoe UI", system-ui, sans-serif; text-align: center; pointer-events: none;
+      opacity: 0; transition: opacity .25s; }
+    .msg.show { opacity: 1; }
+    .msg small { display: block; font-weight: 400; opacity: .75; margin-top: 3px; }
+  </style>
+  <div class="bar">
+    <div class="drag" title="Drag to move · Ctrl+scroll to resize"><span></span></div>
+    <span class="op" title="See-through (Ctrl+Alt+↑/↓)">${popIco('sun')}<input type="range" min="15" max="100" value="100"></span>
+    <button class="ghost" title="Click-through: clicks go to the game underneath (Ctrl+Alt+G)">${popIco('ghost')}</button>
+    <button class="back" title="Back to the Worm tab">${popIco('back')}</button>
+    <button class="close" title="Close (pauses the video)">${popIco('x')}</button>
+  </div>
+  <div class="msg"></div>`;
+  const $ = (s) => root.querySelector(s);
+  const bar = $('.bar'), drag = $('.drag'), msg = $('.msg');
+  const show = () => { bar.classList.add('show'); clearTimeout(pop.hideT); pop.hideT = setTimeout(() => bar.classList.remove('show'), 2200); };
+  pop.say = (text, sub) => {
+    msg.innerHTML = '';
+    msg.append(text);
+    if (sub) { const s = document.createElement('small'); s.textContent = sub; msg.append(s); }
+    msg.classList.add('show');
+    clearTimeout(pop.msgT);
+    pop.msgT = setTimeout(() => msg.classList.remove('show'), 2600);
+  };
+  pop.setGhost = (on) => $('.ghost').classList.toggle('on', on);
+  pop.setOpacity = (o) => { $('input').value = Math.round(o * 100); };
+  pop.setTitle = () => { $('.drag span').textContent = document.title.replace(/ - YouTube$| - Twitch$/, ''); };
+  pop.setTitle();
+  pop.onMove = () => show();
+  window.addEventListener('mousemove', pop.onMove, true);
+  pop.onWheel = (e) => {
+    if (!e.ctrlKey) return;
+    e.preventDefault(); e.stopPropagation();
+    ipcRenderer.send('popout:cmd', { cmd: 'scale', value: e.deltaY < 0 ? 1.08 : 1 / 1.08 });
+  };
+  window.addEventListener('wheel', pop.onWheel, { capture: true, passive: false });
+
+  drag.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    drag.setPointerCapture(e.pointerId);
+    ipcRenderer.send('popout:drag', { phase: 'start', x: e.screenX, y: e.screenY });
+    const move = (ev) => ipcRenderer.send('popout:drag', { phase: 'move', x: ev.screenX, y: ev.screenY });
+    const up = () => {
+      drag.removeEventListener('pointermove', move);
+      drag.removeEventListener('pointerup', up);
+      ipcRenderer.send('popout:drag', { phase: 'end' });
+    };
+    drag.addEventListener('pointermove', move);
+    drag.addEventListener('pointerup', up);
+  });
+  $('input').addEventListener('input', (e) => ipcRenderer.send('popout:cmd', { cmd: 'opacity', value: e.target.value / 100 }));
+  $('.ghost').onclick = () => ipcRenderer.send('popout:cmd', { cmd: 'ghost' });
+  $('.back').onclick = () => ipcRenderer.send('popout:cmd', { cmd: 'back' });
+  $('.close').onclick = () => ipcRenderer.send('popout:cmd', { cmd: 'close' });
+  document.documentElement.appendChild(host);
+  pop.host = host;
+  show();
+  pop.say('Floating over everything', 'Drag the top bar to move · drag edges to resize · Ctrl+Alt+G = click-through');
+}
+
+function popOn() {
+  if (pop) return;
+  pop = { target: null };
+  pop.cssKey = webFrame.insertCSS(POP_CSS, { cssOrigin: 'author' });
+  document.documentElement.classList.add('worm-pop');
+  const start = () => { if (!pop) return; popMark(); if (!pop.host) popBuildUi(); };
+  if (document.body) start(); else document.addEventListener('DOMContentLoaded', start, { once: true });
+  // Sites swap their video element (next YouTube video, Twitch ads/raids); keep following it
+  pop.timer = setInterval(() => { if (!pop) return; popMark(); pop.setTitle && pop.setTitle(); }, 1000);
+}
+function popOff() {
+  if (!pop) return;
+  clearInterval(pop.timer);
+  clearTimeout(pop.hideT); clearTimeout(pop.msgT);
+  if (pop.onMove) window.removeEventListener('mousemove', pop.onMove, true);
+  if (pop.onWheel) window.removeEventListener('wheel', pop.onWheel, { capture: true });
+  if (pop.host) pop.host.remove();
+  try { webFrame.removeInsertedCSS(pop.cssKey); } catch (e) { /* ignore */ }
+  document.documentElement.classList.remove('worm-pop');
+  popUnmark();
+  pop = null;
+  setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
+}
+
+ipcRenderer.on('popout:mode', (_e, d) => { if (d && d.on) popOn(); else popOff(); });
+ipcRenderer.on('popout:do', (_e, d) => {
+  if (!pop || !d) return;
+  if (d.ghost !== undefined) {
+    pop.setGhost && pop.setGhost(d.ghost);
+    pop.say && pop.say(d.ghost ? 'Click-through on' : 'Click-through off', d.ghost ? 'Clicks go to the window underneath · Ctrl+Alt+G to turn off' : '');
+  }
+  if (d.opacity !== undefined) { pop.setOpacity && pop.setOpacity(d.opacity); }
+});

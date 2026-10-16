@@ -8,6 +8,8 @@ const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt
 const fileUrl = (p) => `wormfile://f/?p=${encodeURIComponent(p)}`;
 
 const THIS_PC = '::pc';
+const RECENT = '::recent';
+const isVirtual = (p) => p === THIS_PC || p === RECENT;
 const CAT_TABS = [
   ['all', 'All', 'all'], ['folders', 'Folders', 'folder'], ['images', 'Images', 'image'], ['videos', 'Videos', 'video'],
   ['audio', 'Music', 'music'], ['documents', 'Documents', 'doc'], ['archives', 'Archives', 'archive'],
@@ -33,6 +35,7 @@ const sep = () => INFO.sep || '\\';
 function joinPath(dir, name) { return dir.endsWith(sep()) ? dir + name : dir + sep() + name; }
 function baseName(p) {
   if (p === THIS_PC) return 'This PC';
+  if (p === RECENT) return 'Recent';
   const t = p.replace(/[\\/]+$/, '');
   const i = Math.max(t.lastIndexOf('\\'), t.lastIndexOf('/'));
   const b = i >= 0 ? t.slice(i + 1) : t;
@@ -40,6 +43,7 @@ function baseName(p) {
 }
 function parentOf(p) {
   if (p === THIS_PC) return null;
+  if (p === RECENT) return THIS_PC;
   if (/^[A-Za-z]:\\?$/.test(p) || p === '/') return THIS_PC;
   const t = p.replace(/[\\/]+$/, '');
   const i = Math.max(t.lastIndexOf('\\'), t.lastIndexOf('/'));
@@ -163,7 +167,7 @@ function saveTabs() {
 }
 
 function applyAppearance() {
-  const t = THEMES[S.theme] || THEMES.crimson;
+  const t = themeById(S.theme) || THEMES.crimson;
   const accent = S.accent || t.accent;
   const st = document.documentElement.style;
   st.setProperty('--bg-rgb', t.bg);
@@ -248,13 +252,13 @@ function activateTab(i) {
   $('#items').classList.remove('hidden');
   $('#btn-refresh').innerHTML = icon('refresh');
   $('#btn-refresh').title = 'Refresh (F5)';
-  if (t.path !== THIS_PC) api.web.lastFolder(t.path);
+  if (!isVirtual(t.path)) api.web.lastFolder(t.path);
   $('#search-input').value = t.query;
   $('#deep-toggle').checked = t.deep;
   syncSearchClear();
   if (!t.entries.length && !t.loading && !t.results) load(t);
   else { renderAll(); $('#content').scrollTop = t.scroll; }
-  api.watch(t.path === THIS_PC ? null : t.path);
+  api.watch(isVirtual(t.path) ? null : t.path);
   saveTabs();
 }
 
@@ -274,7 +278,7 @@ function tabIcon(t) {
     if (t.favicon && /^(https?|data):/.test(t.favicon)) return `<img class="favicon" src="${esc(t.favicon)}" alt="">`;
     return icon('globe');
   }
-  return icon(t.deep && t.query ? 'search' : t.path === THIS_PC ? 'desktop' : isReadonlyPath(t.path) ? 'archive' : 'folder');
+  return icon(t.deep && t.query ? 'search' : t.path === THIS_PC ? 'desktop' : t.path === RECENT ? 'clock' : isReadonlyPath(t.path) ? 'archive' : 'folder');
 }
 
 function renderTabs() {
@@ -349,7 +353,7 @@ function setupTabEvents() {
 function navigate(path, { push = true, t = tab(), keepSelection = null } = {}) {
   if (!path) return;
   if (t.kind === 'web') { newTab(path); return; }
-  if (path !== THIS_PC) api.web.lastFolder(path);
+  if (!isVirtual(path)) api.web.lastFolder(path);
   if (t.searching) api.searchCancel(t.searchId);
   if (push && !samePath(path, t.path)) { t.back.push(t.path); t.fwd = []; }
   t.path = path;
@@ -362,7 +366,7 @@ function navigate(path, { push = true, t = tab(), keepSelection = null } = {}) {
     $('#search-input').value = '';
     $('#deep-toggle').checked = t.deep;
     syncSearchClear();
-    api.watch(path === THIS_PC ? null : path);
+    api.watch(isVirtual(path) ? null : path);
   }
   renderTabs();
   saveTabs();
@@ -413,6 +417,7 @@ async function openEntry(e, { newTabToo = false } = {}) {
     return;
   }
   if (S.mediaPlayer !== false && isPlayable(e)) { openPlayer(e); return; }
+  if (e.ext === 'wormtheme' && !e.inArchive) { importThemeFile(e.path); return; }
   const err = await api.open(e.path);
   if (err) toast(`Couldn't open "${e.name}": ${err}`, { error: true });
 }
@@ -467,6 +472,7 @@ function stopSearch() {
 
 // ---------- Sorting & filtering ----------
 function effectiveSort(t = tab()) {
+  if (t.path === RECENT && !S.folderSorts[RECENT]) return { ...S.sort, by: 'mtime', dir: 'desc', foldersFirst: false, source: 'default' };
   if (S.rememberSortPerFolder && S.folderSorts[t.path]) return { ...S.sort, ...S.folderSorts[t.path], source: 'folder' };
   const name = baseName(t.path).toLowerCase();
   for (const r of S.sortRules || []) {
@@ -568,6 +574,7 @@ function renderNavButtons() {
 function crumbList(p) {
   const out = [{ label: 'This PC', path: THIS_PC }];
   if (p === THIS_PC) return out;
+  if (p === RECENT) return [...out, { label: 'Recent', path: RECENT }];
   const m = /^([A-Za-z]:)\\?(.*)$/.exec(p);
   if (m) {
     let acc = m[1] + '\\';
@@ -614,7 +621,7 @@ function renderCats() {
 
 function renderSortLabel() {
   const s = effectiveSort();
-  $('#sort-label').textContent = `${SORT_LABELS[s.by] || 'Name'} ${s.dir === 'desc' ? '↓' : '↑'}${s.source === 'rule' ? ' · auto' : ''}`;
+  $('#sort-label').textContent = `${tab().path === RECENT && s.by === 'mtime' ? 'Last used' : SORT_LABELS[s.by] || 'Name'} ${s.dir === 'desc' ? '↓' : '↑'}${s.source === 'rule' ? ' · auto' : ''}`;
 }
 
 // Thumbnail loading
@@ -729,7 +736,7 @@ function renderItems({ keepScroll = false } = {}) {
 
   const vis = getVisible(t);
   t.visible = vis;
-  const deep = !!(t.deep && t.results);
+  const deep = !!(t.deep && t.results) || t.path === RECENT;
   box.className = S.view;
   box.style.setProperty('--loc-col', deep ? 'minmax(120px, .8fr)' : '0px');
   header.style.setProperty('--loc-col', deep ? 'minmax(120px, .8fr)' : '0px');
@@ -737,7 +744,7 @@ function renderItems({ keepScroll = false } = {}) {
   if (S.view === 'list') {
     const s = effectiveSort();
     const col = (k, label, cls = '') => `<div data-sort="${k}" class="${cls}">${label}${s.by === k ? icon(s.dir === 'desc' ? 'chev' : 'up') : ''}</div>`;
-    header.innerHTML = col('name', 'Name') + col('mtime', 'Date modified') + col('type', 'Type') +
+    header.innerHTML = col('name', 'Name') + col('mtime', t.path === RECENT ? 'Last used' : 'Date modified') + col('type', 'Type') +
       `<div data-sort="size" style="justify-content:flex-end">Size${s.by === 'size' ? icon(s.dir === 'desc' ? 'chev' : 'up') : ''}</div>` +
       (deep ? '<div>Location</div>' : '');
     header.classList.remove('hidden');
@@ -856,7 +863,7 @@ function setProgress(text, stoppable = false) {
 // ---------- Sidebar ----------
 function renderSidebar() {
   const item = (p, label, ic, extra = '') => `<div class="side-item" data-path="${esc(p)}" title="${esc(p)}">${icon(ic)}<span class="label">${esc(label)}</span></div>${extra}`;
-  $('#side-quick').innerHTML = item(THIS_PC, 'This PC', 'desktop') + INFO.quick.map(q => item(q.path, q.label, q.icon)).join('');
+  $('#side-quick').innerHTML = item(THIS_PC, 'This PC', 'desktop') + item(RECENT, 'Recent', 'clock') + INFO.quick.map(q => item(q.path, q.label, q.icon)).join('');
   $('#side-pinned').innerHTML = (S.pinned || []).map(p => item(p.path, p.label || baseName(p.path), 'pin')).join('')
     || '<div class="drive-sub" style="margin:2px 10px 6px">Right-click a folder → Pin</div>';
   $('#side-drives').innerHTML = drives.map(d => {
@@ -931,7 +938,7 @@ async function renderPreview() {
   $('#pv-copy').onclick = () => { api.copyText(e.path); toast('Path copied'); };
   const img = $('#pv-img');
   if (img) {
-    img.onload = () => { $('#pv-dim').textContent = `${img.naturalWidth} × ${img.naturalHeight}`; $('#pv-dim').classList.remove('hidden'); $('#pv-dim-l').classList.remove('hidden'); };
+    img.onload = () => { if (!img.isConnected || !$('#pv-dim')) return; $('#pv-dim').textContent = `${img.naturalWidth} × ${img.naturalHeight}`; $('#pv-dim').classList.remove('hidden'); $('#pv-dim-l').classList.remove('hidden'); };
     img.onerror = () => { img.replaceWith(Object.assign(document.createElement('span'), { id: 'pv-icon' })); fillPvIcon(e); };
   }
   const calc = $('#pv-calc');
@@ -1109,7 +1116,7 @@ function setupContentEvents() {
     const el = e.target.closest('.item');
     if (isWebTab() || isReadonlyPath(tab().path)) return null;
     if (el && el._entry.isDir) return { path: el._entry.path, el };
-    if (tab().path === THIS_PC || tab().deep) return null;
+    if (isVirtual(tab().path) || tab().deep) return null;
     return { path: tab().path, el: null };
   });
 }
@@ -1153,7 +1160,7 @@ function copySel(mode) {
 }
 
 async function doPaste(paths = clip.paths, dest = tab().path, mode = clip.mode) {
-  if (!paths.length || !dest || dest === THIS_PC) return;
+  if (!paths.length || !dest || isVirtual(dest)) return;
   if (isReadonlyPath(dest)) { toast(READONLY_MSG, { error: true }); return; }
   const fromArchive = paths.some(isReadonlyPath);
   if (fromArchive) mode = 'copy';
@@ -1225,7 +1232,7 @@ function startRename(entry) {
 
 async function newFolder() {
   const t = tab();
-  if (t.path === THIS_PC || t.deep) return;
+  if (isVirtual(t.path) || t.deep) return;
   if (isReadonlyPath(t.path)) { toast(READONLY_MSG, { error: true }); return; }
   try {
     const p = await api.newFolder(t.path);
@@ -1238,7 +1245,7 @@ async function newFolder() {
 }
 async function newFile() {
   const t = tab();
-  if (t.path === THIS_PC || t.deep) return;
+  if (isVirtual(t.path) || t.deep) return;
   if (isReadonlyPath(t.path)) { toast(READONLY_MSG, { error: true }); return; }
   try {
     const p = await api.newFile(t.path);
@@ -1290,8 +1297,12 @@ function itemMenu() {
       ? { label: 'Open with default app', icon: 'app', action: () => api.open(one.path) }
       : { label: 'Play in WormFiles', icon: 'play', action: () => openPlayer(one) }),
     one && !one.isDir && { label: 'Open with…', icon: 'app', action: () => api.openWith(one.path) },
+    one && !one.isDir && !one.inArchive && SHRINKABLE.has(one.ext) && { label: 'Shrink video…', icon: 'video', action: () => openShrinkDialog(one) },
+    sel.some(isEditableImage) && { label: sel.filter(isEditableImage).length > 1 ? `Edit ${sel.filter(isEditableImage).length} images…` : 'Edit image…', icon: 'image', action: () => openImageTools(sel) },
+    sel.some(isEditableImage) && { label: 'Rotate right', icon: 'refresh', action: () => quickRotate(sel.filter(isEditableImage), 90) },
+    sel.some(isEditableImage) && { label: 'Rotate left', icon: 'undo', action: () => quickRotate(sel.filter(isEditableImage), -90) },
     one && !one.isDir && BROWSER_OPENABLE.has(one.ext) && { label: 'Open in Worm', icon: 'globe', action: () => newWebTab(fileToUrl(one.path)) },
-    t.deep && one && { label: 'Open file location', icon: 'folder', action: () => navigate(parentOf(one.path), { keepSelection: one.path }) },
+    (t.deep || t.path === RECENT) && one && { label: 'Open file location', icon: 'folder', action: () => navigate(parentOf(one.path), { keepSelection: one.path }) },
     '-',
     { label: 'Cut', icon: 'cut', kbd: 'Ctrl+X', action: () => copySel('move') },
     { label: 'Copy', icon: 'copy', kbd: 'Ctrl+C', action: () => copySel('copy') },
@@ -1303,6 +1314,7 @@ function itemMenu() {
     '-',
     one && one.isDir && { label: 'Pin to sidebar', icon: 'pin', action: () => pinFolder(one.path) },
     one && one.isDir && { label: 'Disk space map', icon: 'map', action: () => openSpaceMap(one.path) },
+    one && one.isDir && { label: 'Find duplicates', icon: 'copy', action: () => openDuplicateFinder(one.path) },
     one && one.isDir && { label: 'Open terminal here', icon: 'terminal', action: () => api.terminal(one.path) },
     one && { label: 'Show in Windows Explorer', icon: 'folder', action: () => api.reveal(one.path) },
     one && { label: 'Properties', icon: 'info', kbd: 'Alt+Enter', action: () => api.properties(one.path) }
@@ -1317,6 +1329,7 @@ function folderMenu(p) {
     '-',
     p !== THIS_PC && (pinned ? { label: 'Unpin from sidebar', icon: 'pin', action: () => unpinFolder(p) } : { label: 'Pin to sidebar', icon: 'pin', action: () => pinFolder(p) }),
     p !== THIS_PC && { label: 'Disk space map', icon: 'map', action: () => openSpaceMap(p) },
+    p !== THIS_PC && { label: 'Find duplicates', icon: 'copy', action: () => openDuplicateFinder(p) },
     p !== THIS_PC && { label: 'Copy path', icon: 'copy', action: () => { api.copyText(p); toast('Path copied'); } },
     p !== THIS_PC && { label: 'Open terminal here', icon: 'terminal', action: () => api.terminal(p) },
     p !== THIS_PC && { label: 'Show in Windows Explorer', icon: 'folder', action: () => api.reveal(p) },
@@ -1327,7 +1340,7 @@ function folderMenu(p) {
 function backgroundMenu() {
   const t = tab();
   const inZip = isReadonlyPath(t.path);
-  const real = t.path !== THIS_PC && !t.deep && !inZip;
+  const real = !isVirtual(t.path) && !t.deep && !inZip;
   return [
     { heading: 'View' },
     { label: 'Grid', icon: 'grid', checked: S.view === 'grid', action: () => setView('grid') },
@@ -1341,6 +1354,7 @@ function backgroundMenu() {
     inZip && '-',
     real && { label: 'Tidy up this folder…', icon: 'sparkle', action: tidyUp },
     real && { label: 'Disk space map', icon: 'map', action: () => openSpaceMap(t.path) },
+    real && { label: 'Find duplicates here', icon: 'copy', action: () => openDuplicateFinder(t.path) },
     !isWebTab() && { label: inSplit() ? 'Exit split view' : 'Split view', icon: 'columns', kbd: 'Ctrl+\\', action: toggleSplit },
     { label: 'Refresh', icon: 'refresh', kbd: 'F5', action: () => load(tab()) },
     real && { label: 'Pin this folder', icon: 'pin', action: () => pinFolder(t.path) },
@@ -1380,7 +1394,7 @@ function setView(v) {
 // ---------- Tidy up ----------
 async function tidyUp() {
   const t = tab();
-  if (t.path === THIS_PC) return;
+  if (isVirtual(t.path)) return;
   let plan;
   try { plan = await api.organizePreview(t.path); } catch (e) { return toast(e.message, { error: true }); }
   const groups = Object.entries(plan);
@@ -1429,14 +1443,16 @@ function openSettings(startTab = 'look') {
 
   const lookPane = () => `
     <div class="side-title" style="padding-left:0">Theme</div>
-    <div class="theme-grid">${Object.entries(THEMES).map(([k, t]) => `
-      <div class="theme-card ${S.theme === k ? 'active' : ''}" data-theme="${k}">
+    <div class="theme-grid">${Object.entries(allThemes()).map(([k, t]) => `
+      <div class="theme-card ${S.theme === k ? 'active' : ''} ${t.custom ? 'custom' : ''}" data-theme="${k}" title="${t.author ? 'By ' + esc(t.author) : ''}">${t.custom ? `<button class="icon-btn tiny theme-del" data-del-theme="${k}" title="Remove this theme">${icon('x')}</button>` : ''}
         <div class="sw" style="background:rgb(${t.bg})"><div class="a" style="background:rgb(${t.surface})"><i style="background:${t.accent}"></i></div>
           <div style="display:grid;place-items:center"><i style="width:60%;height:8px;border-radius:4px;background:rgb(${t.surface2});display:block"></i></div></div>
         <div class="nm" style="background:rgb(${t.surface});color:rgb(${t.text})">${esc(t.name)}</div>
       </div>`).join('')}</div>
+    <div class="row theme-share"><button class="btn" id="theme-import">${icon('download')}Import theme…</button><button class="btn" id="theme-export">${icon('open')}Share my theme…</button>
+      <span class="hint">Saves your colors and background as a <b>.wormtheme</b> file to send to friends. Double-click one to install it.</span></div>
     <div class="field"><label>Accent color</label><div class="row">
-      <input type="color" id="accent-pick" value="${S.accent || THEMES[S.theme]?.accent || '#e11d2e'}">
+      <input type="color" id="accent-pick" value="${S.accent || themeById(S.theme)?.accent || '#e11d2e'}">
       <button class="btn" id="accent-reset" ${S.accent ? '' : 'disabled'}>Use theme color</button></div></div>
     <div class="field"><label>Background image</label><div class="row">
       <div class="bg-preview" style="${S.bgImage ? `background-image:url(&quot;${esc(fileUrl(S.bgImage))}&quot;)` : ''}">${S.bgImage ? '' : 'None'}</div>
@@ -1496,13 +1512,30 @@ function openSettings(startTab = 'look') {
     ['Ctrl+1 / Ctrl+2', 'Grid / list view'], ['Ctrl+scroll', 'Change icon size'], ['Alt+P', 'Toggle preview pane'],
     ['Alt+Enter', 'Properties'], ['Ctrl+,', 'Settings'], ['Type letters', 'Jump to a file by name'], ['Middle-click folder', 'Open in new tab'],
     ['Space', 'Quick look (full-size preview; arrows for next/previous)'], ['Ctrl+\\', 'Split view'],
-    ['Ctrl+Shift+T', 'New Worm tab'], ['Ctrl+D', 'Bookmark page (Worm)'], ['Ctrl+F', 'Find on page (Worm)'], ['Ctrl + / − / 0', 'Zoom page (Worm)'], ['F12', 'Developer tools (Worm)']
+    ['Ctrl+Shift+T', 'New Worm tab'], ['Ctrl+D', 'Bookmark page (Worm)'], ['Ctrl+F', 'Find on page (Worm)'], ['Ctrl + / − / 0', 'Zoom page (Worm)'], ['F12', 'Developer tools (Worm)'],
+    ['Ctrl+H', 'History (Worm)'], ['Ctrl+Shift+O', 'Pop out the video on this page (Worm)'], ['Ctrl+Alt+Space', 'Play / pause the pop-out video (works in games)'],
+    ['Ctrl+Alt+G', 'Pop-out click-through on / off'], ['Ctrl+Alt+↑ / ↓', 'Pop-out see-through'], ['Ctrl+Alt+← / →', 'Pop-out skip 10 seconds'], ['Ctrl+Alt+H', 'Hide / show the pop-out']
   ].map(([k, d]) => `<span><kbd>${esc(k)}</kbd></span><span>${esc(d)}</span>`).join('')}</div>`;
 
   const bind = (pane) => {
     bindBrowserSettings(pane, render);
     renderIntegration(pane);
-    pane.querySelectorAll('[data-theme]').forEach(el => el.onclick = () => { setS({ theme: el.dataset.theme, accent: '' }, { appearance: true }); render(); });
+    pane.querySelectorAll('[data-theme]').forEach(el => el.onclick = (e) => {
+      if (e.target.closest('[data-del-theme]')) return;
+      const t = themeById(el.dataset.theme);
+      setS({ theme: el.dataset.theme, accent: t && t.custom ? t.accent : '' }, { appearance: true }); render();
+    });
+    pane.querySelectorAll('[data-del-theme]').forEach(el => el.onclick = (e) => {
+      e.stopPropagation();
+      const k = el.dataset.delTheme;
+      const rest = { ...(S.customThemes || {}) }; delete rest[k];
+      setS({ customThemes: rest, ...(S.theme === k ? { theme: 'crimson', accent: '' } : {}) }, { appearance: true });
+      render();
+    });
+    const ti = pane.querySelector('#theme-import');
+    if (ti) ti.onclick = async () => { if (await importThemeFile()) render(); };
+    const te = pane.querySelector('#theme-export');
+    if (te) te.onclick = exportThemeDialog;
     pane.querySelectorAll('input[type=range][data-k]').forEach(el => el.oninput = () => {
       const k = el.dataset.k; const v = parseFloat(el.value);
       setS({ [k]: v }, { appearance: true });
@@ -1657,11 +1690,13 @@ function showSearchHelp() {
 function syncSearchClear() {
   $('#search-clear').classList.toggle('hidden', !$('#search-input').value);
   const t = tab();
-  $('#search-input').placeholder = t.deep ? `Search ${baseName(t.path)} and subfolders` : `Search ${baseName(t.path)} · Enter for subfolders`;
+  $('#search-input').placeholder = t.path === RECENT ? 'Search recent files' : t.deep ? `Search ${baseName(t.path)} and subfolders` : `Search ${baseName(t.path)} · Enter for subfolders`;
+  document.body.classList.toggle('in-recent', t.kind !== 'web' && t.path === RECENT);
 }
 
 function setDeep(on, auto = false) {
   const t = tab();
+  if (on && t.path === RECENT) { $('#deep-toggle').checked = false; return; }
   if (on && isReadonlyPath(t.path)) { $('#deep-toggle').checked = false; toast("Searching subfolders doesn't work inside archives"); return; }
   t.deep = on;
   t.deepAuto = on && auto;
@@ -1845,6 +1880,8 @@ function setupKeys() {
 
     // global shortcuts (work even in inputs)
     if (ctrl && e.shiftKey && k.toLowerCase() === 't') { e.preventDefault(); newWebTab(); return; }
+    if (ctrl && e.shiftKey && k.toLowerCase() === 'o' && isWebTab()) { e.preventDefault(); popOutVideo(); return; }
+    if (ctrl && !e.shiftKey && k.toLowerCase() === 'h') { e.preventDefault(); openHistory(); return; }
     if (ctrl && k.toLowerCase() === 't') { e.preventDefault(); newTab(isWebTab() ? THIS_PC : tab().path); return; }
     if (ctrl && k.toLowerCase() === 'w') { e.preventDefault(); closeCurrentTab(); return; }
     if (ctrl && k === '\\') { e.preventDefault(); toggleSplit(); return; }

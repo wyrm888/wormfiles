@@ -126,6 +126,7 @@ async function plPlay(i, { resume = true } = {}) {
   if (PL.kind === 'audio') plLoadTags(e, src, token);
   else plLoadSubs(e, token);
   plMediaSession(e);
+  if (!e.inArchive) api.addRecent(e.path);
 }
 
 async function plLoadTags(e, src, token) {

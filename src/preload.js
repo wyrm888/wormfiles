@@ -37,6 +37,20 @@ contextBridge.exposeInMainWorld('wf', {
   organizeUndo: invoke('organize:undo'),
 
   pickImage: invoke('dialog:pickImage'),
+  themeExport: invoke('theme:export'),
+  videoProbe: invoke('video:probe'),
+  videoPlan: invoke('video:plan'),
+  videoShrink: invoke('video:shrink'),
+  videoCancel: invoke('video:cancel'),
+  copyFiles: invoke('clipboard:files'),
+  addRecent: invoke('recent:add'),
+  readBytes: invoke('fs:readBytes'),
+  saveImage: invoke('image:save'),
+  dupScan: invoke('dup:scan'),
+  dupCancel: invoke('dup:cancel'),
+  onDupProgress: (cb) => ipcRenderer.on('dup:progress', (_e, d) => cb(d)),
+  onVideoProgress: (cb) => ipcRenderer.on('video:progress', (_e, d) => cb(d)),
+  themeImport: invoke('theme:import'),
   pickFolder: invoke('dialog:pickFolder'),
   copyText: invoke('clipboard:text'),
   terminal: invoke('app:terminal'),
@@ -88,8 +102,12 @@ contextBridge.exposeInMainWorld('wf', {
     topSites: invoke('web:topSites'),
     clearData: invoke('web:clearData'),
     cancelDownload: invoke('web:cancelDownload'),
+    popout: invoke('web:popout'),
+    popin: invoke('web:popin'),
+    historyAll: invoke('web:historyAll'),
+    historyDelete: invoke('web:historyDelete'),
     on: (ch, cb) => {
-      const allowed = ['web:state', 'web:open', 'web:hover', 'web:found', 'web:key', 'web:download', 'web:fullscreen', 'web:blocker', 'web:resync'];
+      const allowed = ['web:state', 'web:open', 'web:hover', 'web:found', 'web:key', 'web:download', 'web:fullscreen', 'web:blocker', 'web:resync', 'web:popout', 'web:popoutFailed'];
       if (allowed.includes(ch)) ipcRenderer.on(ch, (_e, d) => cb(d));
     }
   }
