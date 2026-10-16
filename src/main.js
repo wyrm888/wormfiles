@@ -38,6 +38,9 @@ if (earlySettings.gpuBoost !== false) {
   app.commandLine.appendSwitch('enable-gpu-rasterization');   // draw pages on the graphics card
   app.commandLine.appendSwitch('enable-smooth-scrolling');
 }
+// Video overlays (a graphics-card shortcut for drawing video) leave video black in always-on-top windows
+// on some drivers, like the Worm pop-out. Drawing video the normal way costs very little.
+app.commandLine.appendSwitch('disable-direct-composition-video-overlays');
 // Some graphics drivers show black video with hardware decoding; the player offers to turn it off
 if (earlySettings.hwVideo === false) app.commandLine.appendSwitch('disable-accelerated-video-decode');
 // Bigger browser cache (512 MB) so sites you revisit load more from disk

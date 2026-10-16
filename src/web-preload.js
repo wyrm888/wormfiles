@@ -174,6 +174,7 @@ html.worm-pop .worm-pop-fill {
   border-radius: 0 !important; transform: none !important; z-index: 2147483646 !important; background: #000 !important;
 }
 html.worm-pop video.worm-pop-fill, html.worm-pop .worm-pop-fill video { object-fit: contain !important; }
+html.worm-pop::after { content: ''; position: fixed; inset: 0; border: 2px solid var(--worm-pop-accent, #e11d2e); pointer-events: none; z-index: 2147483647; }
 `;
 let pop = null;
 
@@ -303,8 +304,9 @@ function popBuildUi() {
   pop.say('Floating over everything', 'Drag the top bar to move · drag edges to resize · Ctrl+Alt+G = click-through');
 }
 
-function popOn() {
+function popOn(accent) {
   if (pop) return;
+  if (accent) document.documentElement.style.setProperty('--worm-pop-accent', accent);
   pop = { target: null };
   pop.cssKey = webFrame.insertCSS(POP_CSS, { cssOrigin: 'author' });
   document.documentElement.classList.add('worm-pop');
@@ -327,7 +329,7 @@ function popOff() {
   setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
 }
 
-ipcRenderer.on('popout:mode', (_e, d) => { if (d && d.on) popOn(); else popOff(); });
+ipcRenderer.on('popout:mode', (_e, d) => { if (d && d.on) popOn(d.accent); else popOff(); });
 ipcRenderer.on('popout:do', (_e, d) => {
   if (!pop || !d) return;
   if (d.ghost !== undefined) {

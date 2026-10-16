@@ -447,7 +447,6 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
   const popouts = new Map(); // tabId -> { win, view, wc, ghost, opacity, hidden, timer, drag }
   const popByWc = new Map(); // pop-out webContents id -> tabId
   let lastPop = null;
-  const BORDER = 3;
   const POP_FIND_JS = `(() => {
     const vs = [...document.querySelectorAll('video')].filter(v => v.readyState > 0 || v.currentSrc);
     if (!vs.length) return null;
@@ -473,12 +472,6 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
     }
   })()`;
 
-  function popLayout(id) {
-    const p = popouts.get(id);
-    if (!p || p.win.isDestroyed()) return;
-    const [w, h] = p.win.getContentSize();
-    p.view.setBounds({ x: BORDER, y: BORDER, width: Math.max(1, w - BORDER * 2), height: Math.max(1, h - BORDER * 2) });
-  }
   function onScreen(b) {
     return screen.getAllDisplays().some(d => {
       const a = d.workArea;
@@ -513,7 +506,7 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
     const aspect = Math.min(4, Math.max(0.3, info.w / info.h));
     const saved = getSettings().popoutBounds;
     const width = Math.round(Math.min(1600, Math.max(220, saved?.width || 520)));
-    const height = Math.round((width - BORDER * 2) / aspect + BORDER * 2);
+    const height = Math.round(width / aspect);
     const wa = screen.getPrimaryDisplay().workArea;
     let x = wa.x + wa.width - width - 24, y = wa.y + wa.height - height - 24;
     if (saved && onScreen({ x: saved.x, y: saved.y })) { x = saved.x; y = saved.y; }
@@ -521,40 +514,34 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
     const pw = new BrowserWindow({
       x, y, width, height, minWidth: 200, minHeight: 112, show: false, frame: false, resizable: true,
       alwaysOnTop: true, maximizable: false, fullscreenable: false, skipTaskbar: false,
-      backgroundColor: popAccent, title: (v.wc.getTitle() || 'Video') + ' — Worm pop-out',
+      backgroundColor: '#000000', title: (v.wc.getTitle() || 'Video') + ' — Worm pop-out',
       icon: getSettings().appIconPng || path.join(__dirname, '..', 'build', 'icon.png'),
-      webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false }
-    });
-    pw.setAlwaysOnTop(true, 'screen-saver');
-    pw.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-    pw.setAspectRatio(aspect, { width: BORDER * 2, height: BORDER * 2 });
-
-    // Its own page, in the same Worm session (same logins, same ad blocking)
-    const view = new WebContentsView({
+      // The page loads straight into this window (no extra layer on top): the most reliable way to show video.
+      // Same Worm session, so the same logins and ad blocking.
       webPreferences: {
         partition: PARTITION, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true,
         spellcheck: false, safeDialogs: true, autoplayPolicy: 'no-user-gesture-required', backgroundThrottling: false,
         preload: path.join(__dirname, 'web-preload.js')
       }
     });
-    view.setBackgroundColor('#000000');
-    const wc = view.webContents;
-    const p = { win: pw, view, wc, ghost: false, opacity: 1, hidden: false, timer: null, drag: null, saveTimer: null, t: info.t };
+    pw.setAlwaysOnTop(true, 'screen-saver');
+    pw.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    pw.setAspectRatio(aspect);
+
+    const wc = pw.webContents;
+    const p = { win: pw, wc, ghost: false, opacity: 1, hidden: false, timer: null, drag: null, saveTimer: null, t: info.t };
     popouts.set(id, p);
     popByWc.set(wc.id, id);
     lastPop = id;
-    pw.contentView.addChildView(view);
-    popLayout(id);
 
     wc.setWindowOpenHandler(({ url: u }) => { if (/^https?:/.test(u)) send('web:open', { url: u, background: false, opener: id }); return { action: 'deny' }; });
-    wc.on('dom-ready', () => { wc.send('popout:mode', { on: true }); wc.executeJavaScript(popSeekWhenReady(info.live ? 0 : Math.floor(info.t)), true).catch(() => {}); });
+    wc.on('dom-ready', () => { wc.send('popout:mode', { on: true, accent: popAccent }); wc.executeJavaScript(popSeekWhenReady(info.live ? 0 : Math.floor(info.t)), true).catch(() => {}); });
     wc.on('page-title-updated', (_e, title) => { if (!pw.isDestroyed()) pw.setTitle(title + ' — Worm pop-out'); });
     wc.on('enter-html-full-screen', () => wc.executeJavaScript('document.fullscreenElement && document.exitFullscreen()', true).catch(() => {}));
     wc.on('context-menu', (e) => e.preventDefault());
     wc.on('before-input-event', (e, input) => { if (input.type === 'keyDown' && input.key === 'Escape' && p.ghost) setGhost(id, false); });
     wc.loadURL(url).catch(() => {});
 
-    pw.on('resize', () => popLayout(id));
     const remember = () => {
       clearTimeout(p.saveTimer);
       p.saveTimer = setTimeout(() => {
@@ -585,8 +572,6 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
     clearInterval(p.timer);
     let t = null;
     try { if (!p.wc.isDestroyed()) t = await p.wc.executeJavaScript(POP_TIME_JS, true); } catch { t = null; }
-    try { p.win.contentView.removeChildView(p.view); } catch { /* gone */ }
-    try { p.wc.close(); } catch { /* gone */ }
     if (!p.win.isDestroyed()) p.win.destroy();
     // The tab catches up to where the pop-out was, and keeps playing if you brought it back
     const v = views.get(id);
@@ -622,7 +607,7 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
     if (!p) return;
     const b = p.win.getBounds();
     const w = Math.round(Math.min(2400, Math.max(200, b.width * factor)));
-    const h = Math.round((w - BORDER * 2) * ((b.height - BORDER * 2) / (b.width - BORDER * 2)) + BORDER * 2);
+    const h = Math.round(w * (b.height / b.width));
     p.win.setBounds({ x: Math.round(b.x + (b.width - w) / 2), y: Math.round(b.y + (b.height - h) / 2), width: w, height: h });
   }
 
