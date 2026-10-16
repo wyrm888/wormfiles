@@ -12,6 +12,11 @@ const URL_PROGID = 'WormFilesURL';
 const HTML_PROGID = 'WormFilesHTML';
 const CLIENT_KEY = 'Software\\Clients\\StartMenuInternet\\WormFiles';
 
+// The icon Windows shows for WormFiles' registrations: the custom app icon if one is set, otherwise the .exe's
+let customIcon = null;
+function setIconFile(p) { customIcon = p && fs.existsSync(p) ? p : null; }
+function iconRef() { return regStr(customIcon ? customIcon : `"${exePath()}",0`); }
+
 // The .exe that should be launched (the portable build runs from a temp copy, so use the real file)
 function exePath() {
   return process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
@@ -53,7 +58,7 @@ function regQuery(key, value) {
 
 // ---------- Folders: replace File Explorer ----------
 async function enableExplorerReplacement() {
-  const icon = regStr(`"${exePath()}",0`);
+  const icon = iconRef();
   const cmd = regStr(command('"%1"'));
   const lines = [];
   for (const cls of ['Directory', 'Drive']) {
@@ -88,7 +93,7 @@ async function explorerReplacementActive() {
 
 // ---------- Worm: register as a browser ----------
 async function registerBrowser() {
-  const icon = regStr(`"${exePath()}",0`);
+  const icon = iconRef();
   const cmd = regStr(command('"%1"'));
   const lines = [];
   for (const [progid, name] of [[URL_PROGID, 'Worm URL'], [HTML_PROGID, 'Worm HTML Document']]) {
@@ -127,6 +132,41 @@ async function openDefaultAppsSettings() {
   await shell.openExternal('ms-settings:defaultapps?registeredAppUser=WormFiles').catch(() => shell.openExternal('ms-settings:defaultapps'));
 }
 
+// ---------- Videos & music: register WormFiles as a media player ----------
+const MEDIA_PROGID = 'WormFilesMedia';
+const MEDIA_APP_KEY = 'Software\\WormFiles\\Player';
+const MEDIA_REG_NAME = 'WormFilesPlayer';
+const MEDIA_EXTS = ['mp4', 'm4v', 'webm', 'mov', 'mkv', 'ogv', 'mp3', 'wav', 'flac', 'ogg', 'oga', 'm4a', 'aac', 'opus', 'weba'];
+async function registerMediaPlayer() {
+  const icon = iconRef();
+  const cmd = regStr(command('"%1"'));
+  const lines = [
+    `[HKEY_CURRENT_USER\\Software\\Classes\\${MEDIA_PROGID}]`, '@="WormFiles video or song"', '',
+    `[HKEY_CURRENT_USER\\Software\\Classes\\${MEDIA_PROGID}\\DefaultIcon]`, `@=${icon}`, '',
+    `[HKEY_CURRENT_USER\\Software\\Classes\\${MEDIA_PROGID}\\Application]`, '"ApplicationName"="WormFiles"', `"ApplicationIcon"=${icon}`,
+    '"ApplicationCompany"="WormFiles"', '"ApplicationDescription"="Plays videos and music in WormFiles"', '',
+    `[HKEY_CURRENT_USER\\Software\\Classes\\${MEDIA_PROGID}\\shell\\open]`, '@="Play in WormFiles"', '',
+    `[HKEY_CURRENT_USER\\Software\\Classes\\${MEDIA_PROGID}\\shell\\open\\command]`, `@=${cmd}`, ''
+  ];
+  for (const ext of MEDIA_EXTS) lines.push(`[HKEY_CURRENT_USER\\Software\\Classes\\.${ext}\\OpenWithProgids]`, `"${MEDIA_PROGID}"=""`, '');
+  lines.push(
+    `[HKEY_CURRENT_USER\\${MEDIA_APP_KEY}\\Capabilities]`,
+    '"ApplicationName"="WormFiles"', '"ApplicationDescription"="Plays videos and music in WormFiles"', `"ApplicationIcon"=${icon}`, '',
+    `[HKEY_CURRENT_USER\\${MEDIA_APP_KEY}\\Capabilities\\FileAssociations]`,
+    ...MEDIA_EXTS.map(ext => `".${ext}"="${MEDIA_PROGID}"`), '',
+    '[HKEY_CURRENT_USER\\Software\\RegisteredApplications]', `"${MEDIA_REG_NAME}"=${regStr(MEDIA_APP_KEY + '\\Capabilities')}`, ''
+  );
+  return importReg(lines);
+}
+async function isDefaultMediaPlayer() {
+  const id = await regQuery('HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\.mp4\\UserChoice', 'ProgId');
+  return id === MEDIA_PROGID;
+}
+async function openMediaDefaults() {
+  await registerMediaPlayer();
+  await shell.openExternal(`ms-settings:defaultapps?registeredAppUser=${MEDIA_REG_NAME}`).catch(() => shell.openExternal('ms-settings:defaultapps'));
+}
+
 // ---------- Launch arguments ----------
 // Turns process arguments into things to open: folders, files, web addresses
 function parseTargets(argv) {
@@ -152,5 +192,6 @@ function parseTargets(argv) {
 
 module.exports = {
   enableExplorerReplacement, disableExplorerReplacement, explorerReplacementActive,
-  registerBrowser, isDefaultBrowser, openDefaultAppsSettings, parseTargets, exePath
+  registerBrowser, isDefaultBrowser, openDefaultAppsSettings, parseTargets, exePath,
+  registerMediaPlayer, isDefaultMediaPlayer, openMediaDefaults, setIconFile
 };

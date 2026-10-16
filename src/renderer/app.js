@@ -197,6 +197,7 @@ function applyAppearance() {
   const [r, g, b] = t.text.split(' ').map(Number);
   api.setOverlay({ symbolColor: '#' + [r, g, b].map(c => c.toString(16).padStart(2, '0')).join('') });
   $('#zoom').value = S.iconSize;
+  if (typeof syncAppIcon === 'function' && INFO.platform) syncAppIcon(); // the folder icon follows the theme
 }
 
 // ---------- Tabs ----------
@@ -912,7 +913,7 @@ async function renderPreview() {
   let media = '';
   if (e.isDir) media = folderArt();
   else if (src && e.cat === 'images' && !['psd', 'heic', 'heif', 'raw', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf', 'rw2', 'xcf', 'tga', 'tif', 'tiff'].includes(e.ext)) media = `<img src="${esc(fileUrl(src))}" alt="" id="pv-img">`;
-  else if (src && e.cat === 'videos' && ['mp4', 'm4v', 'webm', 'mov', 'mkv', 'ogv'].includes(e.ext)) media = `<video src="${esc(fileUrl(src))}" controls muted preload="metadata"></video>`;
+  else if (src && e.cat === 'videos' && ['mp4', 'm4v', 'webm', 'mov', 'mkv', 'ogv'].includes(e.ext)) media = `<video src="${esc(fileUrl(src))}#t=1" controls muted preload="metadata"></video>`; // #t=1: show a real frame, not the black first one
   else media = '<span id="pv-icon"></span>';
 
   pane.innerHTML = `
@@ -1451,6 +1452,7 @@ function openSettings(startTab = 'look') {
       </div>`).join('')}</div>
     <div class="row theme-share"><button class="btn" id="theme-import">${icon('download')}Import theme…</button><button class="btn" id="theme-export">${icon('open')}Share my theme…</button>
       <span class="hint">Saves your colors and background as a <b>.wormtheme</b> file to send to friends. Double-click one to install it.</span></div>
+    ${appIconPicker()}
     <div class="field"><label>Accent color</label><div class="row">
       <input type="color" id="accent-pick" value="${S.accent || themeById(S.theme)?.accent || '#e11d2e'}">
       <button class="btn" id="accent-reset" ${S.accent ? '' : 'disabled'}>Use theme color</button></div></div>
@@ -1474,6 +1476,7 @@ function openSettings(startTab = 'look') {
     ${check('showExtensions', 'Show file extensions')}
     ${check('showPreview', 'Preview pane')}
     ${check('restoreTabs', 'Reopen tabs on launch')}
+    ${check('hwVideo', 'Hardware video decoding', 'Uses your graphics card to play videos. Turn off if videos are black or glitchy, then restart WormFiles.')}
     ${check('mediaPlayer', 'Play videos and music in WormFiles', 'Double-click a video or song to play it in the built-in player. Turn off to use your usual app instead.')}
     ${check('openArchives', 'Open zip files like folders', 'Double-click a .zip, .7z or .rar to look inside. Turn off to open them with your usual app instead.')}
     <div id="integration"></div>`;
@@ -1519,6 +1522,7 @@ function openSettings(startTab = 'look') {
 
   const bind = (pane) => {
     bindBrowserSettings(pane, render);
+    if (pane.querySelector('.icon-grid')) bindAppIconPicker(pane, render);
     renderIntegration(pane);
     pane.querySelectorAll('[data-theme]').forEach(el => el.onclick = (e) => {
       if (e.target.closest('[data-del-theme]')) return;
@@ -1644,7 +1648,12 @@ async function renderIntegration(pane) {
       <div class="row">${st.defaultBrowser
         ? `<span style="color:var(--accent);display:inline-flex;gap:6px;align-items:center">${icon('check')} Worm is your default browser</span>`
         : `<button class="btn primary" id="int-browser">${icon('globe')}Make Worm my default browser</button>`}</div>
-      <div class="hint">${st.defaultBrowser ? 'Links from other apps open in Worm tabs.' : 'Windows opens its Default apps page. Click <b>Set default</b> at the top, then come back here.'}</div></div>`;
+      <div class="hint">${st.defaultBrowser ? 'Links from other apps open in Worm tabs.' : 'Windows opens its Default apps page. Click <b>Set default</b> at the top, then come back here.'}</div></div>
+    <div class="field"><label>Video &amp; music player</label>
+      <div class="row">${st.defaultPlayer
+        ? `<span style="color:var(--accent);display:inline-flex;gap:6px;align-items:center">${icon('check')} WormFiles plays your videos and music</span> <button class="btn" id="int-player">Change file types…</button>`
+        : `<button class="btn primary" id="int-player">${icon('play')}Make WormFiles my video &amp; music player</button>`}</div>
+      <div class="hint">Windows opens its Default apps page for WormFiles. Click each type you want (.mp4, .mov, .mp3…) and pick <b>WormFiles</b>. Videos you double-click anywhere will play in WormFiles' player.</div></div>`;
   hydrateIcons(box);
   $('#int-explorer', box).onchange = async (e) => {
     const on = e.target.checked;
@@ -1654,6 +1663,12 @@ async function renderIntegration(pane) {
       toast(ok ? 'Folders will now open in WormFiles' : 'Folders will open in File Explorer again');
     } catch (err) { toast("Couldn't change that: " + err.message, { error: true }); }
     renderIntegration(pane);
+  };
+  const pb = $('#int-player', box);
+  if (pb) pb.onclick = async () => {
+    await api.defaultPlayer();
+    toast('In Windows Settings, pick WormFiles for .mp4, .mov, .mp3 and any other types you want');
+    window.addEventListener('focus', () => setTimeout(() => renderIntegration(pane), 300), { once: true });
   };
   const b = $('#int-browser', box);
   if (b) b.onclick = async () => {
@@ -2035,6 +2050,8 @@ function openTargets(list) {
       continue;
     }
     const ext = (t.target.split('.').pop() || '').toLowerCase();
+    if (PL_VIDEO.has(ext) || PL_AUDIO.has(ext)) { playFromOutside(t.target); continue; } // WormFiles is the video/music player
+    if (ext === 'wormtheme') { importThemeFile(t.target); continue; }
     if (['html', 'htm', 'xhtml', 'pdf', 'svg'].includes(ext)) newWebTab(fileToUrl(t.target)); // files Worm is registered for
     else showFileInFolderTab(t.target);
   }

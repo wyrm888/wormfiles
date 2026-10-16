@@ -1,5 +1,5 @@
 ; Undo WormFiles' Windows integration when it's uninstalled (not when it's just being updated),
-; so folders open in File Explorer again and Worm leaves the browser list.
+; so folders open in File Explorer again, Worm leaves the browser list and WormFiles leaves the media player list.
 !macro customUnInstall
   ${ifNot} ${isUpdated}
     ReadRegStr $0 HKCU "Software\Classes\Directory\shell" ""
@@ -20,5 +20,23 @@
     DeleteRegValue HKCU "Software\RegisteredApplications" "WormFiles"
     DeleteRegKey HKCU "Software\Classes\WormFilesURL"
     DeleteRegKey HKCU "Software\Classes\WormFilesHTML"
+    DeleteRegKey HKCU "Software\Classes\WormFilesMedia"
+    DeleteRegKey HKCU "Software\WormFiles\Player"
+    DeleteRegValue HKCU "Software\RegisteredApplications" "WormFilesPlayer"
+    DeleteRegValue HKCU "Software\Classes\.mp4\OpenWithProgids" "WormFilesMedia"
+    DeleteRegValue HKCU "Software\Classes\.m4v\OpenWithProgids" "WormFilesMedia"
+    DeleteRegValue HKCU "Software\Classes\.webm\OpenWithProgids" "WormFilesMedia"
+    DeleteRegValue HKCU "Software\Classes\.mov\OpenWithProgids" "WormFilesMedia"
+    DeleteRegValue HKCU "Software\Classes\.mkv\OpenWithProgids" "WormFilesMedia"
+    DeleteRegValue HKCU "Software\Classes\.ogv\OpenWithProgids" "WormFilesMedia"
+    DeleteRegValue HKCU "Software\Classes\.mp3\OpenWithProgids" "WormFilesMedia"
+    DeleteRegValue HKCU "Software\Classes\.wav\OpenWithProgids" "WormFilesMedia"
+    DeleteRegValue HKCU "Software\Classes\.flac\OpenWithProgids" "WormFilesMedia"
+    DeleteRegValue HKCU "Software\Classes\.ogg\OpenWithProgids" "WormFilesMedia"
+    DeleteRegValue HKCU "Software\Classes\.oga\OpenWithProgids" "WormFilesMedia"
+    DeleteRegValue HKCU "Software\Classes\.m4a\OpenWithProgids" "WormFilesMedia"
+    DeleteRegValue HKCU "Software\Classes\.aac\OpenWithProgids" "WormFilesMedia"
+    DeleteRegValue HKCU "Software\Classes\.opus\OpenWithProgids" "WormFilesMedia"
+    DeleteRegValue HKCU "Software\Classes\.weba\OpenWithProgids" "WormFilesMedia"
   ${endIf}
 !macroend

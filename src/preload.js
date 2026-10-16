@@ -74,6 +74,10 @@ contextBridge.exposeInMainWorld('wf', {
   integrationStatus: invoke('integration:status'),
   setExplorer: invoke('integration:setExplorer'),
   defaultBrowser: invoke('integration:defaultBrowser'),
+  defaultPlayer: invoke('integration:mediaPlayer'),
+  relaunch: invoke('app:relaunch'),
+  applyAppIcon: invoke('icon:apply'),
+  pickIcon: invoke('dialog:pickIcon'),
   pathForFile: (file) => { try { return webUtils.getPathForFile(file); } catch { return ''; } },
 
   // built-in browser

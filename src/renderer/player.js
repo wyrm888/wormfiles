@@ -38,6 +38,23 @@ function openPlayer(e, list) {
   showPlayer(false);
   plPlay(Math.max(0, PL.list.findIndex(x => x.path === e.path)));
 }
+// A video/song opened from outside WormFiles (double-clicked in Windows with WormFiles as the player):
+// open its folder in a tab and play it, with the rest of the folder as "up next"
+async function playFromOutside(p) {
+  const dir = parentOf(p);
+  if (!dir) return;
+  let i = tabs.findIndex(x => x.kind !== 'web' && samePath(x.path, dir));
+  if (i < 0) { tabs.splice(activeIdx + 1, 0, makeTab(dir)); i = activeIdx + 1; }
+  const t = tabs[i];
+  t.selection = new Set([p]); t.anchor = p;
+  activateTab(i);
+  await load(t, { silent: true });
+  setSelection([p], p);
+  const name = baseName(p);
+  const e = (t.entries || []).find(x => samePath(x.path, p)) ||
+    { name, path: p, isDir: false, ext: (name.split('.').pop() || '').toLowerCase(), size: 0, mtime: 0, cat: 'videos' };
+  openPlayer(e);
+}
 // Opens several selected files: all the videos/songs become one playlist, anything else opens normally
 function openEntries(list) {
   const media = S.mediaPlayer !== false ? list.filter(isPlayable) : [];
@@ -112,6 +129,8 @@ async function plPlay(i, { resume = true } = {}) {
     if (saved > 5 && saved < m.duration - 10) {
       m.currentTime = saved;
       const r = $('.pl-resume');
+      $('#pl-restart').textContent = 'Start over';
+      $('#pl-restart').onclick = () => { m.currentTime = 0; r.classList.add('hidden'); m.play().catch(() => {}); };
       r.querySelector('span').textContent = `Resumed at ${fmtTime(saved)}`;
       r.classList.remove('hidden');
       clearTimeout(PL.resumeTimer);
@@ -121,6 +140,7 @@ async function plPlay(i, { resume = true } = {}) {
     if (PL.kind === 'video' && !m.videoWidth) { PL.kind = 'audio'; el.classList.add('audio'); plLoadTags(e, src, token); }
   }, { once: true });
   m.play().catch(() => {});
+  plWatchFrames(token);
   plRenderList();
   plSyncButtons();
   if (PL.kind === 'audio') plLoadTags(e, src, token);
@@ -176,6 +196,31 @@ function plSubsShow(on) {
   $('#pl-cc').classList.toggle('on', on);
 }
 
+// Black-screen check: the video is playing and has a picture size, but no frames ever get drawn.
+// That's a graphics-driver problem; offer to switch to software decoding.
+function plWatchFrames(token) {
+  const m = plMedia();
+  if (!('requestVideoFrameCallback' in HTMLVideoElement.prototype) || S.hwVideo === false) return;
+  let frames = 0;
+  const tick = () => { frames++; if (token === PL.token && frames < 5) m.requestVideoFrameCallback(tick); };
+  m.requestVideoFrameCallback(tick);
+  const check = () => {
+    if (token !== PL.token || PL.kind !== 'video') return;
+    if (m.paused || m.currentTime < 2) { setTimeout(check, 1000); return; }
+    if (frames === 0 && m.videoWidth > 0) plBlackHelp();
+  };
+  setTimeout(check, 2500);
+}
+function plBlackHelp() {
+  const r = $('.pl-resume');
+  r.querySelector('span').textContent = 'Video black? Your graphics driver may not like it.';
+  const b = $('#pl-restart');
+  b.textContent = 'Fix it (restarts WormFiles)';
+  b.onclick = () => { setS({ hwVideo: false }); plSavePos(true); setTimeout(() => api.relaunch(), 300); };
+  r.classList.remove('hidden');
+  clearTimeout(PL.resumeTimer);
+}
+
 function plError(why) {
   const e = PL.list[PL.idx];
   $('#player').classList.add('error');
@@ -183,9 +228,9 @@ function plError(why) {
   msg.innerHTML = `${icon(PL.kind === 'audio' ? 'music' : 'video', 'pl-msg-ico')}
     <b>WormFiles can't play this file</b>
     <span class="dim">${esc(why || 'It uses a format that is not supported here (common with .mkv, .avi and .wmv files).')}</span>
-    <div class="row"><button class="btn primary" id="pl-ext">Open with default app</button>${PL.list.length > 1 ? '<button class="btn" id="pl-skip">Skip to next</button>' : ''}</div>`;
+    <div class="row"><button class="btn primary" id="pl-ext">Open with another app…</button>${PL.list.length > 1 ? '<button class="btn" id="pl-skip">Skip to next</button>' : ''}</div>`;
   msg.classList.remove('hidden');
-  msg.querySelector('#pl-ext').onclick = () => { plMedia().pause(); if (e) api.open(e.path); };
+  msg.querySelector('#pl-ext').onclick = () => { plMedia().pause(); if (e) api.openWith(e.path); }; // not "default app": that may be WormFiles itself
   const sk = msg.querySelector('#pl-skip');
   if (sk) sk.onclick = () => plNext(true);
   plWake();
@@ -452,6 +497,21 @@ function setupPlayer() {
     if (PL.mini) { if (!e.target.closest('button, input, .pl-seek')) showPlayer(false); return; }
     if (e.target === m || e.target === stage || e.target.closest('.pl-art, .pl-backdrop')) plToggle();
   });
+  stage.addEventListener('contextmenu', (e) => {
+    if (PL.mini || e.target.closest('.pl-controls, .pl-top, .pl-list')) return;
+    e.preventDefault();
+    const x = PL.list[PL.idx];
+    showMenu(e.clientX, e.clientY, [
+      { label: m.paused ? 'Play' : 'Pause', icon: m.paused ? 'play' : 'pause', kbd: 'Space', action: plToggle },
+      { label: 'Fullscreen', icon: 'fullscreen', kbd: 'F', action: plToggleFullscreen },
+      x && !x.inArchive && { label: 'Show in folder', icon: 'folder', action: () => { showPlayer(true); navigate(parentOf(x.path), { keepSelection: x.path }); } },
+      x && { label: 'Open with another app…', icon: 'app', action: () => { m.pause(); api.openWith(x.path); } },
+      '-',
+      PL.kind === 'video' && (S.hwVideo !== false
+        ? { label: 'Video black or glitchy? Turn off hardware decoding', icon: 'settings', action: () => { setS({ hwVideo: false }); plSavePos(true); toast('Restarting WormFiles…'); setTimeout(() => api.relaunch(), 400); } }
+        : { label: 'Turn hardware decoding back on', icon: 'settings', action: () => { setS({ hwVideo: true }); plSavePos(true); toast('Restarting WormFiles…'); setTimeout(() => api.relaunch(), 400); } })
+    ]);
+  });
   stage.addEventListener('dblclick', (e) => { if (!PL.mini && (e.target === m || e.target === stage)) plToggleFullscreen(); });
   stage.addEventListener('wheel', (e) => {
     if (PL.mini || e.target.closest('.pl-list')) return;
@@ -532,7 +592,7 @@ function setupPlayer() {
       i !== PL.idx && { label: 'Remove from list', icon: 'x', action: () => { PL.list.splice(i, 1); if (i < PL.idx) PL.idx--; PL.history = []; plRenderList(); plSyncButtons(); } },
       '-',
       !x.inArchive && { label: 'Show in folder', icon: 'folder', action: () => { showPlayer(true); navigate(parentOf(x.path), { keepSelection: x.path }); } },
-      { label: 'Open with default app', icon: 'app', action: () => { m.pause(); api.open(x.path); } }
+      { label: 'Open with another app…', icon: 'app', action: () => { m.pause(); api.openWith(x.path); } }
     ]);
   });
 

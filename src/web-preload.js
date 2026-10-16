@@ -102,6 +102,22 @@ function youtubeMainWorld() {
     } catch (e) { /* already defined */ }
   }
 
+  let stuckSince = 0, stuckVideo = '';
+  function healCheck(player, video) {
+    if (!player || !video || !/^\/(watch|shorts\/|live\/)/.test(location.pathname)) { stuckSince = 0; return; }
+    const id = new URLSearchParams(location.search).get('v') || location.pathname;
+    if (id !== stuckVideo) { stuckVideo = id; stuckSince = 0; }
+    const wantsToPlay = !video.paused || player.classList.contains('playing-mode') || player.classList.contains('buffering-mode');
+    const stuck = wantsToPlay && video.currentTime < 0.3 && video.readyState < 3 && !player.classList.contains('ad-showing') && document.visibilityState === 'visible';
+    if (!stuck) { stuckSince = 0; return; }
+    if (!stuckSince) { stuckSince = Date.now(); return; }
+    if (Date.now() - stuckSince < 6000) return;
+    stuckSince = 0;
+    let done = false;
+    try { done = sessionStorage.getItem('worm-healed') === id; sessionStorage.setItem('worm-healed', id); } catch (e) { done = true; }
+    if (!done) location.reload(); // only once per video, so it can never loop
+  }
+
   // Safety net: if an ad still starts, mute it, jump to the end and press Skip
   let adActive = false, prevMuted = false, prevRate = 1;
   const SKIP = '.ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button, button[id^="skip-button"], .ytp-ad-skip-button-container button';
@@ -122,6 +138,10 @@ function youtubeMainWorld() {
       video.muted = prevMuted;
       try { video.playbackRate = prevRate; } catch (e) { /* ignore */ }
     }
+
+    // Stuck-video fix: YouTube sometimes won't start the first video after the page opens
+    // (the player sits at 0:00 forever until you refresh). If that happens, refresh once by ourselves.
+    healCheck(player, video);
 
     // "Ad blockers violate YouTube's Terms" popup: remove it and keep playing
     const enforce = document.querySelector('ytd-enforcement-message-view-model');

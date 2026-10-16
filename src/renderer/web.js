@@ -200,7 +200,7 @@ async function renderNewTabPage() {
   const engine = SEARCH_ENGINES[S.webSearchEngine] || 'DuckDuckGo';
   const pins = pinnedSites();
   page.innerHTML = `<div class="ntp">
-    <div class="ntp-brand"><img src="../../build/icon.png" alt="" class="ntp-favimg"><span>Worm</span></div>
+    <div class="ntp-brand"><img src="${esc(brandIconUrl())}" alt="" class="app-brand"><span>Worm</span></div>
     <form class="ntp-search" id="ntp-form">${icon('search')}<input id="ntp-input" placeholder="Search ${esc(engine)} or type a URL" autocomplete="off" spellcheck="false"></form>
     <div class="ntp-grid ntp-pins">
       ${pins.map((b, i) => pinTileHtml(b, i)).join('')}

@@ -284,14 +284,12 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
       else if (k === 'F5' || (ctrl && /^[rR]$/.test(k))) { if (input.shift) wc.reloadIgnoringCache(); else wc.reload(); e.preventDefault(); return; }
       else if (k === 'F12') { wc.toggleDevTools(); e.preventDefault(); return; }
       else if (k === 'Escape') action = 'escape';
-      if (action && popouts.has(id)) return; // tab shortcuts mean nothing inside the floating video
       if (action) {
         if (action !== 'escape') e.preventDefault();
         send('web:key', { id, action });
       }
     });
     wc.on('context-menu', (_e, p) => pageMenu(id, wc, p));
-    wc.on('dom-ready', () => { if (popouts.has(id)) wc.send('popout:mode', { on: true }); }); // page reloaded inside a pop-out
 
     wc.loadURL(url).catch(() => { /* reported via did-fail-load */ });
     if (!background) emit(id);
@@ -415,7 +413,7 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
     const v = views.get(id);
     if (!win || !v) return;
     if (fsTab === id) { v.view.setBounds(fullBounds()); v.view.setVisible(true); return; }
-    if (popouts.has(id)) return; // it's in its own floating window
+    if (popouts.has(id)) { v.view.setVisible(false); return; } // its video is playing in the pop-out
     for (const [oid, o] of views) if (oid !== id && !popouts.has(oid)) o.view.setVisible(false);
     if (attachedId !== id) {
       win.contentView.addChildView(v.view); // re-adding moves it to the top
@@ -425,7 +423,7 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
     v.view.setBounds(normalBounds);
     v.view.setVisible(true);
   }
-  function hideAll() { for (const [oid, o] of views) if (!popouts.has(oid)) o.view.setVisible(false); }
+  function hideAll() { for (const [, o] of views) o.view.setVisible(false); }
   function destroy(id) {
     const v = views.get(id);
     if (!v) return;
@@ -442,10 +440,12 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
 
 
   // =====================================================================
-  // Pop-out video: the tab itself moves into a small always-on-top window
-  // (same page, so the video keeps playing, streams don't reconnect, logins stay)
+  // Pop-out video: a small always-on-top window with its own copy of the page,
+  // started at the same moment of the video. (Moving the tab itself made the picture go
+  // black on some graphics cards.) The tab behind it pauses and catches up when you come back.
   // =====================================================================
-  const popouts = new Map(); // tabId -> { win, ghost, opacity, hidden, timer, drag }
+  const popouts = new Map(); // tabId -> { win, view, wc, ghost, opacity, hidden, timer, drag }
+  const popByWc = new Map(); // pop-out webContents id -> tabId
   let lastPop = null;
   const BORDER = 3;
   const POP_FIND_JS = `(() => {
@@ -453,16 +453,31 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
     if (!vs.length) return null;
     const score = v => { const r = v.getBoundingClientRect(); return (v.paused ? 0 : 1e9) + r.width * r.height; };
     vs.sort((a, b) => score(b) - score(a));
-    return { w: vs[0].videoWidth || 16, h: vs[0].videoHeight || 9 };
+    const v = vs[0];
+    return { w: v.videoWidth || 16, h: v.videoHeight || 9, t: isFinite(v.duration) ? v.currentTime : 0, live: !isFinite(v.duration), url: location.href };
   })()`;
-  const POP_TOGGLE_JS = `(() => { const v = document.querySelector('.worm-pop-fill video, video.worm-pop-fill') || document.querySelector('video'); if (v) v.paused ? v.play() : v.pause(); })()`;
-  const popSeekJs = (s) => `(() => { const v = document.querySelector('.worm-pop-fill video, video.worm-pop-fill') || document.querySelector('video'); if (v && isFinite(v.duration)) v.currentTime = Math.max(0, Math.min(v.duration - 0.5, v.currentTime + (${s}))); })()`;
+  const MAIN_VIDEO = `(document.querySelector('.worm-pop-fill video, video.worm-pop-fill') || [...document.querySelectorAll('video')].sort((a, b) => (b.paused ? 0 : 1) - (a.paused ? 0 : 1))[0])`;
+  const POP_TOGGLE_JS = `(() => { const v = ${MAIN_VIDEO}; if (v) v.paused ? v.play() : v.pause(); })()`;
+  const popSeekJs = (s) => `(() => { const v = ${MAIN_VIDEO}; if (v && isFinite(v.duration)) v.currentTime = Math.max(0, Math.min(v.duration - 0.5, v.currentTime + (${s}))); })()`;
+  const POP_TIME_JS = `(() => { const v = ${MAIN_VIDEO}; return v && isFinite(v.duration) ? v.currentTime : null; })()`;
+  // Start the pop-out at the same moment (YouTube understands ?t=, other sites get a seek once the video loads)
+  const popSeekWhenReady = (t) => `(async () => {
+    for (let i = 0; i < 60; i++) {
+      const v = ${MAIN_VIDEO};
+      if (v && v.readyState > 0) {
+        if (${t} > 3 && isFinite(v.duration) && v.duration > ${t} && Math.abs(v.currentTime - ${t}) > 3) v.currentTime = ${t};
+        if (v.paused) v.play().catch(() => {});
+        return true;
+      }
+      await new Promise(r => setTimeout(r, 250));
+    }
+  })()`;
 
   function popLayout(id) {
-    const p = popouts.get(id), v = views.get(id);
-    if (!p || !v || p.win.isDestroyed()) return;
+    const p = popouts.get(id);
+    if (!p || p.win.isDestroyed()) return;
     const [w, h] = p.win.getContentSize();
-    v.view.setBounds({ x: BORDER, y: BORDER, width: Math.max(1, w - BORDER * 2), height: Math.max(1, h - BORDER * 2) });
+    p.view.setBounds({ x: BORDER, y: BORDER, width: Math.max(1, w - BORDER * 2), height: Math.max(1, h - BORDER * 2) });
   }
   function onScreen(b) {
     return screen.getAllDisplays().some(d => {
@@ -486,6 +501,15 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
       await v.wc.executeJavaScript('document.fullscreenElement && document.exitFullscreen()', true).catch(() => {});
       leaveFullscreen(id);
     }
+    // The tab behind pauses so you don't hear it twice
+    v.wc.executeJavaScript("document.querySelectorAll('video').forEach(x => x.pause())", true).catch(() => {});
+
+    let url = info.url;
+    try {
+      const u = new URL(url);
+      if (/(^|\.)youtube\.com$/.test(u.hostname) && info.t > 3 && !info.live) { u.searchParams.set('t', Math.floor(info.t) + 's'); url = u.toString(); }
+    } catch { /* keep url */ }
+
     const aspect = Math.min(4, Math.max(0.3, info.w / info.h));
     const saved = getSettings().popoutBounds;
     const width = Math.round(Math.min(1600, Math.max(220, saved?.width || 520)));
@@ -498,24 +522,37 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
       x, y, width, height, minWidth: 200, minHeight: 112, show: false, frame: false, resizable: true,
       alwaysOnTop: true, maximizable: false, fullscreenable: false, skipTaskbar: false,
       backgroundColor: popAccent, title: (v.wc.getTitle() || 'Video') + ' — Worm pop-out',
-      icon: path.join(__dirname, '..', 'build', 'icon.png'),
+      icon: getSettings().appIconPng || path.join(__dirname, '..', 'build', 'icon.png'),
       webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false }
     });
     pw.setAlwaysOnTop(true, 'screen-saver');
     pw.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     pw.setAspectRatio(aspect, { width: BORDER * 2, height: BORDER * 2 });
 
-    // Move the page out of the WormFiles window and into the pop-out
-    try { main.contentView.removeChildView(v.view); } catch { /* not attached */ }
-    if (attachedId === id) attachedId = null;
-    pw.contentView.addChildView(v.view);
-    const p = { win: pw, ghost: false, opacity: 1, hidden: false, timer: null, drag: null, saveTimer: null };
+    // Its own page, in the same Worm session (same logins, same ad blocking)
+    const view = new WebContentsView({
+      webPreferences: {
+        partition: PARTITION, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true,
+        spellcheck: false, safeDialogs: true, autoplayPolicy: 'no-user-gesture-required', backgroundThrottling: false,
+        preload: path.join(__dirname, 'web-preload.js')
+      }
+    });
+    view.setBackgroundColor('#000000');
+    const wc = view.webContents;
+    const p = { win: pw, view, wc, ghost: false, opacity: 1, hidden: false, timer: null, drag: null, saveTimer: null, t: info.t };
     popouts.set(id, p);
+    popByWc.set(wc.id, id);
     lastPop = id;
+    pw.contentView.addChildView(view);
     popLayout(id);
-    v.view.setVisible(true);
-    v.wc.setBackgroundThrottling(false); // keep playing smoothly while a game has focus
-    v.wc.send('popout:mode', { on: true });
+
+    wc.setWindowOpenHandler(({ url: u }) => { if (/^https?:/.test(u)) send('web:open', { url: u, background: false, opener: id }); return { action: 'deny' }; });
+    wc.on('dom-ready', () => { wc.send('popout:mode', { on: true }); wc.executeJavaScript(popSeekWhenReady(info.live ? 0 : Math.floor(info.t)), true).catch(() => {}); });
+    wc.on('page-title-updated', (_e, title) => { if (!pw.isDestroyed()) pw.setTitle(title + ' — Worm pop-out'); });
+    wc.on('enter-html-full-screen', () => wc.executeJavaScript('document.fullscreenElement && document.exitFullscreen()', true).catch(() => {}));
+    wc.on('context-menu', (e) => e.preventDefault());
+    wc.on('before-input-event', (e, input) => { if (input.type === 'keyDown' && input.key === 'Escape' && p.ghost) setGhost(id, false); });
+    wc.loadURL(url).catch(() => {});
 
     pw.on('resize', () => popLayout(id));
     const remember = () => {
@@ -533,27 +570,29 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
     pw.on('close', (e) => { if (popouts.get(id) === p) { e.preventDefault(); popIn(id, { pause: true }); } });
     if (!mainHooked) { mainHooked = true; main.on('close', () => { for (const pid of [...popouts.keys()]) popIn(pid, { silent: true }); }); }
 
+    v.view.setVisible(false); // the tab shows a "playing in a pop-out" page meanwhile
     pw.showInactive();
-    v.wc.focus();
     popShortcuts();
     send('web:popout', { id, on: true });
     return 'ok';
   }
 
-  function popIn(id, { pause = false, focusMain = false, silent = false } = {}) {
+  async function popIn(id, { pause = false, focusMain = false, silent = false } = {}) {
     const p = popouts.get(id);
     if (!p) return;
     popouts.delete(id);
+    popByWc.delete(p.wc.id);
     clearInterval(p.timer);
-    const v = views.get(id);
-    if (v && !v.wc.isDestroyed()) {
-      try { p.win.contentView.removeChildView(v.view); } catch { /* gone */ }
-      v.view.setVisible(false);
-      v.wc.setBackgroundThrottling(true);
-      v.wc.send('popout:mode', { on: false });
-      if (pause) v.wc.executeJavaScript("document.querySelectorAll('video').forEach(x => x.pause())", true).catch(() => {});
-    }
+    let t = null;
+    try { if (!p.wc.isDestroyed()) t = await p.wc.executeJavaScript(POP_TIME_JS, true); } catch { t = null; }
+    try { p.win.contentView.removeChildView(p.view); } catch { /* gone */ }
+    try { p.wc.close(); } catch { /* gone */ }
     if (!p.win.isDestroyed()) p.win.destroy();
+    // The tab catches up to where the pop-out was, and keeps playing if you brought it back
+    const v = views.get(id);
+    if (v && !v.wc.isDestroyed() && typeof t === 'number') {
+      v.wc.executeJavaScript(`(() => { const x = ${MAIN_VIDEO}; if (!x) return; if (isFinite(x.duration)) x.currentTime = ${t}; ${pause ? '' : 'x.play().catch(() => {});'} })()`, true).catch(() => {});
+    }
     if (lastPop === id) lastPop = popouts.size ? [...popouts.keys()].pop() : null;
     popShortcuts();
     if (!silent) send('web:popout', { id, on: false, focus: focusMain });
@@ -564,19 +603,19 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
   }
 
   function setGhost(id, on) {
-    const p = popouts.get(id), v = views.get(id);
+    const p = popouts.get(id);
     if (!p) return;
     p.ghost = on;
     p.win.setIgnoreMouseEvents(on);
     p.win.setFocusable(!on);
-    if (v) v.wc.send('popout:do', { ghost: on });
+    p.wc.send('popout:do', { ghost: on });
   }
   function setOpacity(id, val) {
-    const p = popouts.get(id), v = views.get(id);
+    const p = popouts.get(id);
     if (!p) return;
     p.opacity = Math.min(1, Math.max(0.15, val));
     p.win.setOpacity(p.opacity);
-    if (v) v.wc.send('popout:do', { opacity: p.opacity });
+    p.wc.send('popout:do', { opacity: p.opacity });
   }
   function scalePop(id, factor) {
     const p = popouts.get(id);
@@ -590,9 +629,9 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
   // Global hotkeys, only while a pop-out is open (so they work while you're in a game)
   const POP_KEYS = {
     'CommandOrControl+Alt+G': () => lastPop != null && setGhost(lastPop, !popouts.get(lastPop).ghost),
-    'CommandOrControl+Alt+Space': () => { const v = lastPop != null && views.get(lastPop); if (v) v.wc.executeJavaScript(POP_TOGGLE_JS, true).catch(() => {}); },
-    'CommandOrControl+Alt+Right': () => { const v = lastPop != null && views.get(lastPop); if (v) v.wc.executeJavaScript(popSeekJs(10), true).catch(() => {}); },
-    'CommandOrControl+Alt+Left': () => { const v = lastPop != null && views.get(lastPop); if (v) v.wc.executeJavaScript(popSeekJs(-10), true).catch(() => {}); },
+    'CommandOrControl+Alt+Space': () => { const v = lastPop != null && popouts.get(lastPop); if (v) v.wc.executeJavaScript(POP_TOGGLE_JS, true).catch(() => {}); },
+    'CommandOrControl+Alt+Right': () => { const v = lastPop != null && popouts.get(lastPop); if (v) v.wc.executeJavaScript(popSeekJs(10), true).catch(() => {}); },
+    'CommandOrControl+Alt+Left': () => { const v = lastPop != null && popouts.get(lastPop); if (v) v.wc.executeJavaScript(popSeekJs(-10), true).catch(() => {}); },
     'CommandOrControl+Alt+Up': () => lastPop != null && setOpacity(lastPop, popouts.get(lastPop).opacity + 0.1),
     'CommandOrControl+Alt+Down': () => lastPop != null && setOpacity(lastPop, popouts.get(lastPop).opacity - 0.1),
     'CommandOrControl+Alt+H': () => {
@@ -614,7 +653,7 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
   }
   app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch { /* ignore */ } });
 
-  const popOf = (e) => { const id = wcToTab.get(e.sender.id); return id != null && popouts.has(id) ? id : null; };
+  const popOf = (e) => { const id = popByWc.get(e.sender.id); return id != null && popouts.has(id) ? id : null; };
   ipcMain.on('popout:drag', (e, d) => {
     const id = popOf(e);
     if (id == null) return;

@@ -1001,3 +1001,13 @@ body.in-recent label:has(> #deep-toggle) { display: none !important; }
 .imgtools .it-opts { min-width: 0; }
 .imgtools select { max-width: 100%; }
 .imgtools .it-q { flex-basis: 100%; }
+
+/* App icon picker */
+.icon-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; margin: 6px 0 8px; }
+.icon-card { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 6px 8px; border-radius: var(--radius);
+  background: var(--surface2); border: 1px solid var(--border); color: var(--text); font-size: .88em; cursor: default; }
+.icon-card:hover { border-color: var(--accent); }
+.icon-card.active { border-color: var(--accent); box-shadow: 0 0 0 2px rgb(var(--accent-rgb) / .35); }
+.icon-prev { width: 48px; height: 48px; display: grid; place-items: center; color: var(--dim); }
+.icon-prev img { width: 48px; height: 48px; display: block; }
+.icon-prev .ico { width: 26px; height: 26px; }

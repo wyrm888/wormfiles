@@ -15,6 +15,7 @@ const mediatags = require('./mediatags');
 const themefile = require('./themefile');
 const video = require('./video');
 const dupes = require('./dupes');
+const appIcon = require('./appicon-main');
 
 // ---------- Custom protocol so the UI can show local images/videos safely ----------
 protocol.registerSchemesAsPrivileged([
@@ -37,6 +38,8 @@ if (earlySettings.gpuBoost !== false) {
   app.commandLine.appendSwitch('enable-gpu-rasterization');   // draw pages on the graphics card
   app.commandLine.appendSwitch('enable-smooth-scrolling');
 }
+// Some graphics drivers show black video with hardware decoding; the player offers to turn it off
+if (earlySettings.hwVideo === false) app.commandLine.appendSwitch('disable-accelerated-video-decode');
 // Bigger browser cache (512 MB) so sites you revisit load more from disk
 app.commandLine.appendSwitch('disk-cache-size', String(512 * 1024 * 1024));
 
@@ -106,6 +109,7 @@ const DEFAULT_SETTINGS = {
   webDns: 'cloudflare',
   openArchives: true,
   mediaPlayer: true,
+  hwVideo: true,
   mailButton: true,
   mailBackground: true,
   mailUrl: 'https://mail.proton.me/u/0/inbox',
@@ -171,7 +175,8 @@ function createWindow() {
     backgroundColor: '#0a0a0c',
     titleBarStyle: 'hidden',
     titleBarOverlay: { color: '#00000000', symbolColor: '#e8eaf0', height: 40 },
-    icon: path.join(__dirname, '..', 'build', process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
+    icon: (settings.appIconFile && fs.existsSync(settings.appIconFile)) ? settings.appIconFile
+      : path.join(__dirname, '..', 'build', process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -239,8 +244,14 @@ app.whenReady().then(() => {
   if (settings.mica) applyMica(true);
   // Keep Windows pointing at this copy of WormFiles (the path changes if it's reinstalled or moved)
   if (process.platform === 'win32' && app.isPackaged) {
+    if (settings.appIconFile && fs.existsSync(settings.appIconFile)) {
+      integration.setIconFile(settings.appIconFile);
+      appIcon.updateShortcuts(settings.appIconFile); // updates put the default icon back on shortcuts
+      try { win.setAppDetails({ appId: 'com.wormfiles.app', appIconPath: settings.appIconFile, appIconIndex: 0 }); } catch { /* ignore */ }
+    }
     if (settings.replaceExplorer) integration.enableExplorerReplacement().catch(() => {});
     if (settings.browserRegistered) integration.registerBrowser().catch(() => {});
+    if (settings.mediaRegistered) integration.registerMediaPlayer().catch(() => {});
   }
 });
 
@@ -515,8 +526,14 @@ ipcMain.handle('app:takeTargets', () => { rendererReady = true; const t = pendin
 ipcMain.handle('integration:status', async () => ({
   windows: process.platform === 'win32',
   replaceExplorer: await integration.explorerReplacementActive().catch(() => false),
-  defaultBrowser: await integration.isDefaultBrowser().catch(() => false)
+  defaultBrowser: await integration.isDefaultBrowser().catch(() => false),
+  defaultPlayer: await integration.isDefaultMediaPlayer().catch(() => false)
 }));
+ipcMain.handle('app:relaunch', () => { saveSettings(); app.relaunch(); app.exit(0); });
+ipcMain.handle('integration:mediaPlayer', async () => {
+  settings.mediaRegistered = true; saveSettings();
+  await integration.openMediaDefaults();
+});
 ipcMain.handle('integration:setExplorer', async (_e, on) => {
   if (on) await integration.enableExplorerReplacement(); else await integration.disableExplorerReplacement();
   settings.replaceExplorer = !!on; saveSettings();
@@ -865,6 +882,34 @@ ipcMain.handle('dup:scan', async (_e, id, root, opts) => {
 });
 ipcMain.handle('dup:cancel', (_e, id) => dupes.cancel(id));
 
+// ---------- App icon ----------
+async function reRegisterIntegrations() {
+  if (process.platform !== 'win32' || !app.isPackaged) return;
+  integration.setIconFile(settings.appIconFile);
+  if (settings.replaceExplorer) await integration.enableExplorerReplacement().catch(() => {});
+  if (settings.browserRegistered) await integration.registerBrowser().catch(() => {});
+  if (settings.mediaRegistered) await integration.registerMediaPlayer().catch(() => {});
+}
+ipcMain.handle('icon:apply', async (_e, { png }) => {
+  const r = await appIcon.apply(png);
+  settings.appIconFile = r.ico; settings.appIconPng = r.png; saveSettings();
+  if (win && process.platform === 'win32') win.setAppDetails({ appId: 'com.wormfiles.app', appIconPath: r.ico, appIconIndex: 0 });
+  reRegisterIntegrations();
+  return { png: r.png };
+});
+ipcMain.handle('dialog:pickIcon', async () => {
+  const r = await dialog.showOpenDialog(win, {
+    title: 'Choose a picture for the app icon', properties: ['openFile'],
+    filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'ico', 'avif'] }]
+  });
+  if (r.canceled || !r.filePaths[0]) return null;
+  const dir = path.join(app.getPath('userData'), 'icons');
+  await fsp.mkdir(dir, { recursive: true });
+  const dest = path.join(dir, `source-${Date.now()}${path.extname(r.filePaths[0])}`);
+  await fsp.copyFile(r.filePaths[0], dest);
+  return dest;
+});
+
 // ---------- Theme files ----------
 ipcMain.handle('theme:export', (_e, t) => themefile.exportTheme(win, t));
 ipcMain.handle('theme:import', async (_e, p) => {
@@ -920,7 +965,7 @@ ipcMain.handle('app:properties', (_e, p) => {
 });
 
 ipcMain.on('drag:start', (e, paths) => {
-  const icon = nativeImage.createFromPath(path.join(__dirname, '..', 'build', 'icon.png')).resize({ width: 48, height: 48 });
+  const icon = nativeImage.createFromPath(settings.appIconPng && fs.existsSync(settings.appIconPng) ? settings.appIconPng : path.join(__dirname, '..', 'build', 'icon.png')).resize({ width: 48, height: 48 });
   try {
     e.sender.startDrag({ files: paths, file: paths[0], icon });
   } catch { /* ignore */ }
