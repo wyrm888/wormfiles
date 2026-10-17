@@ -87,7 +87,7 @@ function startMailInBackground() {
   if (!S.mailButton || !S.mailBackground) return;
   setTimeout(() => {
     const t = ensureMailTab();
-    if (!t.created) { api.web.create(t.id, t.url, { background: true }); t.created = true; t.loading = true; }
+    if (!t.created) { api.web.create(t.id, t.url, { background: true, eager: true }); t.created = true; t.loading = true; }
   }, 2500);
 }
 

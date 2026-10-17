@@ -9,6 +9,30 @@ try { cfg = ipcRenderer.sendSync('web:shieldConfig') || cfg; } catch { /* use de
 const host = location.hostname;
 const isYouTube = /(^|\.)youtube\.com$/.test(host) || /(^|\.)youtube-nocookie\.com$/.test(host);
 
+// YouTube video format: ask for H.264 (plays smoothly on every PC) instead of AV1/VP9, which some
+// graphics cards decode badly (choppy, or the picture goes black while the sound keeps playing).
+// Same idea as the "h264ify" extension. Up to 1080p. Turn off in Worm settings for 4K.
+if (isYouTube && cfg.ytH264 !== false) {
+  webFrame.executeJavaScript(`(${h264Only.toString()})();`).catch(() => {});
+}
+function h264Only() {
+  if (window.__wormH264) return;
+  window.__wormH264 = true;
+  const blocked = (t) => /av01|vp0?9|vp8|vp09/i.test(String(t || ''));
+  const patch = (obj, name, wrap) => { try { if (obj && obj[name]) { const orig = obj[name]; obj[name] = wrap(orig); } } catch (e) { /* ignore */ } };
+  patch(window.MediaSource, 'isTypeSupported', (orig) => function (t) { return blocked(t) ? false : orig.call(this, t); });
+  patch(window.ManagedMediaSource, 'isTypeSupported', (orig) => function (t) { return blocked(t) ? false : orig.call(this, t); });
+  patch(HTMLMediaElement.prototype, 'canPlayType', (orig) => function (t) { return blocked(t) ? '' : orig.call(this, t); });
+  if (navigator.mediaCapabilities && navigator.mediaCapabilities.decodingInfo) {
+    const orig = navigator.mediaCapabilities.decodingInfo.bind(navigator.mediaCapabilities);
+    navigator.mediaCapabilities.decodingInfo = (cfg) => {
+      const ct = cfg && cfg.video && cfg.video.contentType;
+      if (blocked(ct)) return Promise.resolve({ supported: false, smooth: false, powerEfficient: false });
+      return orig(cfg);
+    };
+  }
+}
+
 if (isYouTube && cfg.youtube) {
   // 1) Hide ad slots, promoted results and the "ad blockers are not allowed" popup
   webFrame.insertCSS(`
@@ -91,7 +115,9 @@ function youtubeMainWorld() {
   };
 
   // Data embedded in the first page load
-  for (const name of ['ytInitialPlayerResponse', 'ytInitialData']) {
+  // (ytInitialPlayerResponse is left alone: removing the first video's ad from it makes YouTube's player
+  // stall until you refresh. If that first ad plays, the safety net below mutes and skips it.)
+  for (const name of ['ytInitialData']) {
     let val;
     try {
       Object.defineProperty(window, name, {
@@ -102,6 +128,32 @@ function youtubeMainWorld() {
     } catch (e) { /* already defined */ }
   }
 
+  // "Sound but no picture": the time is moving but no video frames are being drawn. Refresh once, same spot.
+  let frameVideo = null, frames = 0, blackSample = null;
+  function countFrames(v) {
+    if (frameVideo === v || !v.requestVideoFrameCallback) return;
+    frameVideo = v; frames = 0; blackSample = null;
+    const tick = () => { frames++; if (frameVideo === v) v.requestVideoFrameCallback(tick); };
+    v.requestVideoFrameCallback(tick);
+  }
+  function blackCheck(player, video, id) {
+    countFrames(video);
+    const playing = !video.paused && video.currentTime > 1 && !player.classList.contains('ad-showing') && document.visibilityState === 'visible';
+    if (!playing) { blackSample = null; return; }
+    const now = Date.now();
+    if (!blackSample) { blackSample = { at: now, t: video.currentTime, frames }; return; }
+    if (now - blackSample.at < 3500) return;
+    const moved = video.currentTime - blackSample.t > 2, drew = frames > blackSample.frames;
+    blackSample = { at: now, t: video.currentTime, frames };
+    if (!moved || drew) return;
+    let done = false;
+    try { done = sessionStorage.getItem('worm-healed-black') === id; sessionStorage.setItem('worm-healed-black', id); } catch (e) { done = true; }
+    if (done) return;
+    const u = new URL(location.href);
+    if (u.pathname === '/watch') u.searchParams.set('t', Math.floor(video.currentTime) + 's');
+    location.replace(u.toString());
+  }
+
   let stuckSince = 0, stuckVideo = '';
   function healCheck(player, video) {
     if (!player || !video || !/^\/(watch|shorts\/|live\/)/.test(location.pathname)) { stuckSince = 0; return; }
@@ -109,6 +161,7 @@ function youtubeMainWorld() {
     if (id !== stuckVideo) { stuckVideo = id; stuckSince = 0; }
     const wantsToPlay = !video.paused || player.classList.contains('playing-mode') || player.classList.contains('buffering-mode');
     const stuck = wantsToPlay && video.currentTime < 0.3 && video.readyState < 3 && !player.classList.contains('ad-showing') && document.visibilityState === 'visible';
+    blackCheck(player, video, id);
     if (!stuck) { stuckSince = 0; return; }
     if (!stuckSince) { stuckSince = Date.now(); return; }
     if (Date.now() - stuckSince < 6000) return;

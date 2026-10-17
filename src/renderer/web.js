@@ -39,7 +39,7 @@ function newWebTab(url = WEB_NEWTAB, { activate = true, after = null } = {}) {
   t._openedBy = after;
   tabs.splice(at, 0, t);
   if (at <= activeIdx && !activate) activeIdx++;
-  if (!activate && url !== WEB_NEWTAB) { window.wf.web.create(t.id, url, { background: true }); t.created = true; t.loading = true; }
+  if (!activate && url !== WEB_NEWTAB) { window.wf.web.create(t.id, url, { background: true }); t.created = true; } // loads when you first open it
   if (activate) activateTab(at); else renderTabs();
   saveTabs();
   if (activate && url === WEB_NEWTAB) setTimeout(() => { const i = $('#ntp-input'); if (i) i.focus(); }, 30);
@@ -429,6 +429,8 @@ async function popOutVideo(t = tab()) {
   if (t.popped) { api.web.popout(t.id); return; } // already out: just show it
   const r = await api.web.popout(t.id, accentHex());
   if (r === 'novideo') toast('No video on this page yet — start it playing, then pop it out', { error: true });
+  else if (r === 'pip') toast('Popped out — drag a corner to resize · Ctrl+Alt+Space play/pause · Ctrl+Alt+←/→ skip', { ms: 5000 });
+  else if (r === 'pip-closed') toast('Pop-out closed');
 }
 function renderPoppedPage(t) {
   $('#webpage').innerHTML = `<div class="ntp web-error popped-page">
@@ -811,6 +813,14 @@ function browserSettingsPane() {
     <div class="field"><label>Search engine</label><select data-bsel="webSearchEngine">
       ${Object.entries(SEARCH_ENGINES).map(([k, l]) => `<option value="${k}" ${S.webSearchEngine === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
     ${chk('webBlockAds', 'Block ads & trackers', 'Uses the EasyList and EasyPrivacy filter lists (the same ones uBlock Origin uses). Lists refresh every few days.')}
+    <div class="field"><label>Pop-out video</label><select data-bsel="webPopoutMode">
+      <option value="pip" ${S.webPopoutMode !== 'window' ? 'selected' : ''}>Picture-in-picture (most reliable)</option>
+      <option value="window" ${S.webPopoutMode === 'window' ? 'selected' : ''}>Floating window (click-through & see-through)</option></select>
+      <div class="hint">Both stay on top of other windows and games in borderless/windowed mode. The floating window adds click-through and see-through, but can show a black picture on some graphics cards.</div></div>
+    <div class="field"><label>YouTube video format</label><select data-bsel="webYtCodec">
+      <option value="h264" ${S.webYtCodec !== 'any' ? 'selected' : ''}>Most compatible (H.264, up to 1080p)</option>
+      <option value="any" ${S.webYtCodec === 'any' ? 'selected' : ''}>Best quality (AV1 / VP9, up to 4K)</option></select>
+      <div class="hint">Most compatible plays smoothly on every PC. If YouTube videos stutter or go black, use this. Applies to newly opened pages.</div></div>
     ${chk('webBlockThirdPartyCookies', 'Block third-party cookies', 'Stops other sites embedded in a page from reading their cookies.')}
     ${chk('webDoNotTrack', 'Send Do Not Track', 'Also sends Global Privacy Control, which is legally binding in some US states.')}
     ${chk('webRememberHistory', 'Remember history', 'Used for address-bar suggestions and Most visited. Stored only on this PC.')}

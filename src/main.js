@@ -41,6 +41,11 @@ if (earlySettings.gpuBoost !== false) {
 // Video overlays (a graphics-card shortcut for drawing video) leave video black in always-on-top windows
 // on some drivers, like the Worm pop-out. Drawing video the normal way costs very little.
 app.commandLine.appendSwitch('disable-direct-composition-video-overlays');
+// Keep drawing video when Windows thinks a window is covered (an always-on-top pop-out over a game
+// was being treated as hidden: sound kept playing but the picture stopped), and don't drop the picture
+// from videos in tabs you're not looking at, so they show right away when you come back.
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion,BackgroundVideoTrackOptimization,BackgroundVideoPauseOptimization');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 // Some graphics drivers show black video with hardware decoding; the player offers to turn it off
 if (earlySettings.hwVideo === false) app.commandLine.appendSwitch('disable-accelerated-video-decode');
 // Bigger browser cache (512 MB) so sites you revisit load more from disk
@@ -109,6 +114,8 @@ const DEFAULT_SETTINGS = {
   gpuBoost: true,
   webPreload: true,
   webShowMostVisited: false,
+  webYtCodec: 'h264',
+  webPopoutMode: 'pip',
   webDns: 'cloudflare',
   openArchives: true,
   mediaPlayer: true,

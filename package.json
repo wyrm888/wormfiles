@@ -1,7 +1,7 @@
 {
   "name": "wormfiles",
   "productName": "WormFiles",
-  "version": "1.5.3",
+  "version": "1.5.7",
   "description": "A customizable file explorer for Windows 11 with tabs, themes, smart search, category views and a built-in privacy browser.",
   "main": "src/main.js",
   "author": "WormFiles",

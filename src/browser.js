@@ -225,7 +225,7 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
     });
   }
 
-  function create(id, url, { background = false } = {}) {
+  function create(id, url, { background = false, eager = false } = {}) {
     if (views.has(id)) return;
     const view = new WebContentsView({
       webPreferences: {
@@ -291,7 +291,10 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
     });
     wc.on('context-menu', (_e, p) => pageMenu(id, wc, p));
 
-    wc.loadURL(url).catch(() => { /* reported via did-fail-load */ });
+    // Pages start loading once they're actually on screen: YouTube's player breaks (black / won't start until
+    // you refresh) if it sets itself up while the page is hidden. Mail loads early for its unread count.
+    if (eager) wc.loadURL(url).catch(() => { /* reported via did-fail-load */ });
+    else views.get(id).pending = url;
     if (!background) emit(id);
   }
 
@@ -422,6 +425,7 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
     normalBounds = { x: Math.round(b.x), y: Math.round(b.y), width: Math.max(0, Math.round(b.width)), height: Math.max(0, Math.round(b.height)) };
     v.view.setBounds(normalBounds);
     v.view.setVisible(true);
+    if (v.pending) { const u = v.pending; v.pending = null; v.wc.loadURL(u).catch(() => {}); }
   }
   function hideAll() { for (const [, o] of views) o.view.setVisible(false); }
   function destroy(id) {
@@ -455,7 +459,7 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
     const v = vs[0];
     return { w: v.videoWidth || 16, h: v.videoHeight || 9, t: isFinite(v.duration) ? v.currentTime : 0, live: !isFinite(v.duration), url: location.href };
   })()`;
-  const MAIN_VIDEO = `(document.querySelector('.worm-pop-fill video, video.worm-pop-fill') || [...document.querySelectorAll('video')].sort((a, b) => (b.paused ? 0 : 1) - (a.paused ? 0 : 1))[0])`;
+  const MAIN_VIDEO = `(document.pictureInPictureElement || document.querySelector('.worm-pop-fill video, video.worm-pop-fill') || [...document.querySelectorAll('video')].sort((a, b) => (b.paused ? 0 : 1) - (a.paused ? 0 : 1))[0])`;
   const POP_TOGGLE_JS = `(() => { const v = ${MAIN_VIDEO}; if (v) v.paused ? v.play() : v.pause(); })()`;
   const popSeekJs = (s) => `(() => { const v = ${MAIN_VIDEO}; if (v && isFinite(v.duration)) v.currentTime = Math.max(0, Math.min(v.duration - 0.5, v.currentTime + (${s}))); })()`;
   const POP_TIME_JS = `(() => { const v = ${MAIN_VIDEO}; return v && isFinite(v.duration) ? v.currentTime : null; })()`;
@@ -481,8 +485,49 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
 
   let popAccent = '#e11d2e';
   let mainHooked = false;
+  // ---------- Default pop-out: Chrome's own picture-in-picture window ----------
+  // It floats the video that's already playing in the tab (nothing reloads), stays on top, and can be
+  // resized from its corners. This is Chrome's built-in video window, so it's the most dependable option.
+  let pipTab = null, pipTimer = null;
+  const PIP_JS = `(async () => {
+    if (document.pictureInPictureElement) { await document.exitPictureInPicture(); return 'pip-closed'; }
+    const vs = [...document.querySelectorAll('video')].filter(v => v.readyState > 0 || v.currentSrc);
+    if (!vs.length) return 'novideo';
+    const score = v => { const r = v.getBoundingClientRect(); return (v.paused ? 0 : 1e9) + r.width * r.height; };
+    const v = vs.sort((a, b) => score(b) - score(a))[0];
+    try {
+      v.disablePictureInPicture = false;
+      await v.requestPictureInPicture();
+      if (v.paused) v.play().catch(() => {});
+      return 'pip';
+    } catch (e) { return 'fallback'; }
+  })()`;
+  async function pipToggle(id) {
+    const v = views.get(id);
+    if (!v || v.wc.isDestroyed()) return 'gone';
+    let r;
+    try { r = await v.wc.executeJavaScript(PIP_JS, true); } catch { r = 'fallback'; }
+    if (r === 'pip') {
+      pipTab = id;
+      clearInterval(pipTimer);
+      // Notice when the picture-in-picture window is closed, so the hotkeys switch off again
+      pipTimer = setInterval(async () => {
+        const t = pipTab != null && views.get(pipTab);
+        let on = false;
+        try { on = !!(t && !t.wc.isDestroyed() && await t.wc.executeJavaScript('!!document.pictureInPictureElement', true)); } catch { on = false; }
+        if (!on) { pipTab = null; clearInterval(pipTimer); popShortcuts(); }
+      }, 2500);
+      popShortcuts();
+    } else if (r === 'pip-closed' && pipTab === id) { pipTab = null; clearInterval(pipTimer); popShortcuts(); }
+    return r;
+  }
+
   async function popOut(id, accent) {
     if (accent && /^#[0-9a-f]{6}$/i.test(accent)) popAccent = accent;
+    if (getSettings().webPopoutMode !== 'window' && !popouts.has(id)) {
+      const r = await pipToggle(id);
+      if (r !== 'fallback') return r; // otherwise use the floating window below
+    }
     const v = views.get(id);
     const main = getWin();
     if (!v || v.wc.isDestroyed() || !main) return 'gone';
@@ -540,7 +585,6 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
     wc.on('enter-html-full-screen', () => wc.executeJavaScript('document.fullscreenElement && document.exitFullscreen()', true).catch(() => {}));
     wc.on('context-menu', (e) => e.preventDefault());
     wc.on('before-input-event', (e, input) => { if (input.type === 'keyDown' && input.key === 'Escape' && p.ghost) setGhost(id, false); });
-    wc.loadURL(url).catch(() => {});
 
     const remember = () => {
       clearTimeout(p.saveTimer);
@@ -559,6 +603,7 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
 
     v.view.setVisible(false); // the tab shows a "playing in a pop-out" page meanwhile
     pw.showInactive();
+    setTimeout(() => { if (!wc.isDestroyed()) wc.loadURL(url).catch(() => {}); }, 60); // load once the window is on screen
     popShortcuts();
     send('web:popout', { id, on: true });
     return 'ok';
@@ -613,12 +658,12 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
 
   // Global hotkeys, only while a pop-out is open (so they work while you're in a game)
   const POP_KEYS = {
-    'CommandOrControl+Alt+G': () => lastPop != null && setGhost(lastPop, !popouts.get(lastPop).ghost),
-    'CommandOrControl+Alt+Space': () => { const v = lastPop != null && popouts.get(lastPop); if (v) v.wc.executeJavaScript(POP_TOGGLE_JS, true).catch(() => {}); },
-    'CommandOrControl+Alt+Right': () => { const v = lastPop != null && popouts.get(lastPop); if (v) v.wc.executeJavaScript(popSeekJs(10), true).catch(() => {}); },
-    'CommandOrControl+Alt+Left': () => { const v = lastPop != null && popouts.get(lastPop); if (v) v.wc.executeJavaScript(popSeekJs(-10), true).catch(() => {}); },
-    'CommandOrControl+Alt+Up': () => lastPop != null && setOpacity(lastPop, popouts.get(lastPop).opacity + 0.1),
-    'CommandOrControl+Alt+Down': () => lastPop != null && setOpacity(lastPop, popouts.get(lastPop).opacity - 0.1),
+    'CommandOrControl+Alt+G': () => lastPop != null && popouts.has(lastPop) && setGhost(lastPop, !popouts.get(lastPop).ghost),
+    'CommandOrControl+Alt+Space': () => { const w = hotkeyWc(); if (w) w.executeJavaScript(POP_TOGGLE_JS, true).catch(() => {}); },
+    'CommandOrControl+Alt+Right': () => { const w = hotkeyWc(); if (w) w.executeJavaScript(popSeekJs(10), true).catch(() => {}); },
+    'CommandOrControl+Alt+Left': () => { const w = hotkeyWc(); if (w) w.executeJavaScript(popSeekJs(-10), true).catch(() => {}); },
+    'CommandOrControl+Alt+Up': () => lastPop != null && popouts.has(lastPop) && setOpacity(lastPop, popouts.get(lastPop).opacity + 0.1),
+    'CommandOrControl+Alt+Down': () => lastPop != null && popouts.has(lastPop) && setOpacity(lastPop, popouts.get(lastPop).opacity - 0.1),
     'CommandOrControl+Alt+H': () => {
       const p = lastPop != null && popouts.get(lastPop);
       if (!p) return;
@@ -626,12 +671,20 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
       if (p.hidden) p.win.hide(); else p.win.showInactive();
     }
   };
+  // The page whose video the hotkeys control: the floating window, or the tab showing picture-in-picture
+  function hotkeyWc() {
+    const p = lastPop != null && popouts.get(lastPop);
+    if (p && !p.wc.isDestroyed()) return p.wc;
+    const t = pipTab != null && views.get(pipTab);
+    return t && !t.wc.isDestroyed() ? t.wc : null;
+  }
   let keysOn = false;
   function popShortcuts() {
-    if (popouts.size && !keysOn) {
+    const any = popouts.size || pipTab != null;
+    if (any && !keysOn) {
       keysOn = true;
       for (const [k, fn] of Object.entries(POP_KEYS)) { try { globalShortcut.register(k, fn); } catch { /* taken by another app */ } }
-    } else if (!popouts.size && keysOn) {
+    } else if (!any && keysOn) {
       keysOn = false;
       for (const k of Object.keys(POP_KEYS)) { try { globalShortcut.unregister(k); } catch { /* ignore */ } }
     }
@@ -661,13 +714,13 @@ function setupBrowser({ getWin, getSettings, saveSettings, send }) {
   ipcMain.handle('web:popin', (_e, id, opts) => popIn(id, { focusMain: true, ...(opts || {}) }));
 
   // ---------- Page shield (YouTube) ----------
-  ipcMain.on('web:shieldConfig', (e) => { e.returnValue = { youtube: !!getSettings().webBlockAds }; });
+  ipcMain.on('web:shieldConfig', (e) => { const s = getSettings(); e.returnValue = { youtube: !!s.webBlockAds, ytH264: s.webYtCodec !== 'any' }; });
   ipcMain.on('web:ytBlocked', (e) => countBlocked(e.sender.id));
 
   // ---------- IPC ----------
   const withWc = (fn) => (_e, id, ...a) => { const v = getView(id); if (v && !v.wc.isDestroyed()) return fn(v.wc, id, ...a); };
   ipcMain.handle('web:create', (_e, id, url, opts) => create(id, url, opts));
-  ipcMain.handle('web:navigate', withWc((wc, id, url) => { wc.loadURL(url).catch(() => {}); }));
+  ipcMain.handle('web:navigate', withWc((wc, id, url) => { const v = getView(id); if (v) v.pending = null; wc.loadURL(url).catch(() => {}); }));
   ipcMain.handle('web:back', withWc((wc) => wc.navigationHistory.canGoBack() && wc.navigationHistory.goBack()));
   ipcMain.handle('web:forward', withWc((wc) => wc.navigationHistory.canGoForward() && wc.navigationHistory.goForward()));
   ipcMain.handle('web:reload', withWc((wc) => wc.reload()));
